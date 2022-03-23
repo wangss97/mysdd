@@ -151,10 +151,7 @@ def ssim(img1, img2, window_size=11, window=None, size_average=True, full=False,
 
 
 class SSIM(torch.nn.Module):
-    # def __init__(self, window_size=11, size_average=True, val_range=None):
-    def __init__(self, window_size=9, size_average=True, val_range=None, device='cuda'):
-    # def __init__(self, window_size=5, size_average=True, val_range=None):
-    # def __init__(self, window_size=3, size_average=True, val_range=None):
+    def __init__(self, window_size=11, size_average=True, val_range=None, device='cuda'):
         super(SSIM, self).__init__()
         self.window_size = window_size
         self.size_average = size_average
@@ -191,13 +188,6 @@ class EntropyLoss(nn.Module):
     def forward(self, input):
         return self.entropyLoss(input)
 
-class examp(torch.nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.weight = Parameter(torch.Tensor(8,3,16,16))
-    
-    def forward(self, x):
-        return x
 
 if __name__ == '__main__':
         
@@ -220,8 +210,8 @@ if __name__ == '__main__':
     #         # print(torch.std(value, dim=1))
     #         # print(torch.norm(value, dim=1))
 
-    a = torch.rand((2,3,4))
-    print(a.max(1).values.max(1).values)
+    a = torch.randn(3,4,3,3)
+    b = torch.randn(1,4,3,3)
+    print((b*0).shape)
+    print((a+b).shape)
 
-    a = np.random.rand(2,3,4)
-    print(np.max(a,axis=(1,2)))

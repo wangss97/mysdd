@@ -17,6 +17,7 @@ def get_logger(file):
         print(f'日志文件不存在，创建新的日志文件:{file}')
         open(file, 'w')
 
+    logging.shutdown()
     logger = logging.getLogger(__name__)
     logger.setLevel(level = logging.INFO)
     handler = logging.FileHandler(file)
@@ -109,4 +110,14 @@ def visualize(img_list, save_dir, img_name):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     cv2.imwrite(save_dir+'/'+img_name, img_show)
+
+def toImg(dataBatch):
+    mean=[0.406, 0.456, 0.485]
+    std=[0.225, 0.224, 0.229]
+
+    for i in range(3):
+        dataBatch[...,i] = (dataBatch[...,i] * std[i] + mean[i])*255
+    dataBatch = np.clip(dataBatch, 0, 255)
+    
+    return np.array(dataBatch, dtype=np.uint8)
 

@@ -156,7 +156,7 @@ class DecoderDiscriminative(nn.Module):
 
 
 
-        self.fin_out = nn.Sequential(nn.Conv2d(base_width, out_channels, kernel_size=3, padding=1))
+        self.fin_out = nn.Sequential(nn.Conv2d(base_width, out_channels, kernel_size=1, padding=0))
 
     def forward(self, b1,b2,b3,b4,b5,b6):
         up_b = self.up_b(b6)

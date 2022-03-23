@@ -118,12 +118,14 @@ class BlockMemory_trainableFalse(nn.Module):
     
 
 class MemoryUnit(nn.Module):
-    def __init__(self, mem_dim, fea_dim, shrink_thres=0.0025, device='cuda'):
+    def __init__(self, input_size, mem_size, fea_dim, shrink_thres=0.0025, device='cuda'):
         super(MemoryUnit, self).__init__()
-        self.mem_dim = mem_dim
+        self.mem_size = mem_size
         self.fea_dim = fea_dim
-        self.weight = Parameter(torch.Tensor(self.mem_dim, self.fea_dim))  # M x C
-        self.acti = torch.nn.Sigmoid()
+        self.input_size = input_size
+        self.weight = Parameter(torch.Tensor(self.mem_size, self.fea_dim))  # M x C
+
+        # self.acti = torch.nn.Sigmoid()
         self.bias = None
         self.shrink_thres= shrink_thres
         # self.hard_sparse_shrink_opt = nn.Hardshrink(lambd=shrink_thres)
@@ -141,32 +143,47 @@ class MemoryUnit(nn.Module):
         让input中每一个像素与self.weight中最近的memory item更近，与第二近的memory item更远
          '''
         lossFunc = torch.nn.TripletMarginLoss()
+        if self.mem_size >=2:
+            _, indices = torch.topk(att_weight, 2, dim=1)   # indices的形状[b*h*w, 2]
 
-        _, indices = torch.topk(att_weight, 2, dim=1)   # indices的形状[b*h*w, 2]
+            pos = self.weight[indices[:,0]]    # [b*h*w, c]， 与input中每个像素最近的memory item
+            neg = self.weight[indices[:,1]]    # [b*h*w, c],  与input中每个像素第二近的memory item
 
-        pos = self.weight[indices[:,0]]    # [b*h*w, c]， 与input中每个像素最近的memory item
-        neg = self.weight[indices[:,1]]    # [b*h*w, c],  与input中每个像素第二近的memory item
+            triplet_loss = lossFunc(input, pos, neg)
+        else:
+            _, indices = torch.topk(att_weight, 1, dim=1)   # indices的形状[b*h*w, 1]
 
-        triplet_loss = lossFunc(input, pos, neg)
+            pos = self.weight[indices[:,0]]    # [b*h*w, c]， 与input中每个像素最近的memory item
+
+            triplet_loss = torch.nn.MSELoss()(input, pos)
 
         return triplet_loss
 
-    def compact_loss(self, input, att_weight):
-        ''' input形状[b*h*w, c]， att_weight形状[b*h*w, m]
+    def compact_loss(self, input, att_weight, label):
+        ''' input形状[b*h*w, c]， att_weight形状[b*h*w, m], label的形状是[b],对于label是1的样本不计算compact_loss
+
         让input中每一个像素与self.weight中最近的memory item更近
          '''
         
+        b = label.shape[0]
+        m, c = self.weight.shape
+
         _, indices = torch.topk(att_weight, 1, dim=1)  # indices的形状[b*h*w, 1]
 
         pos = self.weight[indices[:,0]]   # [b*h*w, c], 与input中每个像素最近的memory item
 
-        compact_loss = torch.nn.MSELoss()(input, pos)
-
+        compact_loss = torch.nn.MSELoss()(input, pos)  # [b*h*w, c]
+        # compact_loss = torch.reshape(compact_loss, [b, -1, c])
+        # compact_loss = compact_loss[label==0]
+        # compact_loss = compact_loss.mean()
         return compact_loss
 
     def distance_loss(self):
         ''' 让self.weight中的memory item彼此都离得更远 '''
         m, c = self.weight.size()
+        if m == 1:
+            return 0
+
         margin = 1
         distance = margin - torch.square(self.weight.unsqueeze(0) - self.weight.unsqueeze(1)).sum(-1)   # distance形状[m, m]，表示m个memory item互相之间的距离
         mask = distance > 0
@@ -182,7 +199,7 @@ class MemoryUnit(nn.Module):
         return distance_loss
 
 
-    def forward(self, input:torch.Tensor):
+    def forward(self, input:torch.Tensor, label_batch):
         ''' 输入形状[b*h*w, c], self.weight形状[m, c] '''
         T,C = input.size()
         M,C = self.weight.size()
@@ -198,7 +215,7 @@ class MemoryUnit(nn.Module):
         # print(torch.norm(self.weight, dim=1))
         # quit()
         triplet_loss = self.triplet_margin_loss(input, att_weight)
-        compact_loss = self.compact_loss(input, att_weight)
+        compact_loss = self.compact_loss(input, att_weight, label_batch)
         distance_loss = self.distance_loss()
 
         # ReLU based shrinkage, hard shrinkage for positive value
@@ -213,15 +230,15 @@ class MemoryUnit(nn.Module):
 
         mem_trans = self.weight.permute(1, 0)  # Mem^T, MxC
         output = F.linear(att_weight, mem_trans)  # AttWeight x Mem^T^T = AW x Mem, (TxM) x (MxC) = TxC
-        # output = self.acti(output)
+        # output = F.normalize(output, dim=-1)
 
         norm_loss = torch.abs(1 - torch.norm(self.weight, 2, dim=1)).mean()
         entropy_loss = EntropyLoss()(att_weight)
         return output, entropy_loss, triplet_loss, norm_loss, compact_loss, distance_loss   # output, att_weight
 
     def extra_repr(self):
-        return 'mem_dim={}, fea_dim={}'.format(
-            self.mem_dim, self.fea_dim is not None
+        return 'mem_size={}, fea_dim={}'.format(
+            self.mem_size, self.fea_dim is not None
         )
 
 # relu based hard shrinkage function, only works for positive values
@@ -230,17 +247,21 @@ def hard_shrink_relu(input, lambd=0, epsilon=1e-12):
     return output
 
 class BlockMemory(torch.nn.Module):
-    def __init__(self, block_list, mem_size, fea_dim, pos_size = 128, shrink_thres=0.0025, device='cuda') -> None:
+    def __init__(self, block_list, mem_size_list, fea_dim, pos_ebd_weight = 1., shrink_thres=0.0025, device='cuda') -> None:
         super().__init__()
 
         memorys = []
+        pos_embeddings = []
         self.upsamplers = []
         self.block_list = block_list
         self.device = device
-        self.pos_size = pos_size
+        self.pos_ebd_weight = pos_ebd_weight
 
-        for bsize in block_list:
-            memorys.append(MemoryUnit(mem_size, fea_dim, shrink_thres, device))
+        for i in range(len(block_list)):
+            memorys.append(MemoryUnit(input_size = block_list[i], mem_size = mem_size_list[i], fea_dim = fea_dim, shrink_thres = shrink_thres, device = device))
+            pos_embeddings.append(Parameter(torch.randn((1, fea_dim, block_list[i], block_list[i]))))
+
+        self.pos_embeddings = nn.ParameterList(pos_embeddings)
         self.memorys = nn.ModuleList(memorys)
 
     def spatial_pyramid_pool(self, input, out_pool_size:list):
@@ -258,7 +279,7 @@ class BlockMemory(torch.nn.Module):
         input_pool_list = []
 
         for i in range(len(out_pool_size)):
-            if out_pool_size[i] == -1:
+            if out_pool_size[i] == h and out_pool_size[i] == w:
                 input_pool = input
             elif out_pool_size[i] == 1:
                 maxpool = nn.MaxPool2d((h, w), padding=0)
@@ -266,8 +287,8 @@ class BlockMemory(torch.nn.Module):
             else:
                 h_wid = int(math.ceil(h / out_pool_size[i]))
                 w_wid = int(math.ceil(w / out_pool_size[i]))
-                h_pad = math.ceil((h_wid*out_pool_size[i] - h + 1)/2)
-                w_pad = math.ceil((w_wid*out_pool_size[i] - w + 1)/2)
+                h_pad = math.ceil((h_wid*out_pool_size[i] - h )/2)
+                w_pad = math.ceil((w_wid*out_pool_size[i] - w )/2)
                 maxpool = nn.MaxPool2d((h_wid, w_wid), stride=(h_wid, w_wid), padding=(h_pad, w_pad))
                 input_pool = maxpool(input)
             input_pool_list.append(input_pool)
@@ -278,14 +299,13 @@ class BlockMemory(torch.nn.Module):
         input_upsample_concat = []
         for input in input_list:
             input_upsample = F.interpolate(input=input, size=dsize, mode='bilinear')
-            # input_upsample = F.upsample_bilinear(input=input, size=dsize)
             input_upsample_concat.append(input_upsample)
 
         input_upsample_concat = torch.concat(input_upsample_concat, dim=1)
         
         return input_upsample_concat
     
-    def forward(self, input:torch.Tensor):
+    def forward(self, input:torch.Tensor, label_batch):
         ''' input shape [b, c, h, w] '''
         b, c, h, w = input.size()
 
@@ -301,19 +321,14 @@ class BlockMemory(torch.nn.Module):
         for i, input_pool in enumerate(input_pool_list):
             b, c, h_i, w_i = input_pool.size()
 
-            # 加入位置编码
-            pos_ebd = positionalencoding2d(self.pos_size, h_i, w_i).to(device=self.device).unsqueeze(0).repeat(b,1,1,1)
-            input_pool = torch.concat([pos_ebd, input_pool], dim=1)
-            c = c + self.pos_size
+            # 加入位置编码 相加
+            # input_pool = input_pool + self.pos_ebd_weight * self.pos_embeddings[i]
 
             input_pool = input_pool.permute((0,2,3,1)).reshape((-1,c))
 
-            memory_rec, entropy_loss, triplet_loss, norm_loss, compact_loss, distance_loss = self.memorys[i](input_pool)
+            memory_rec, entropy_loss, triplet_loss, norm_loss, compact_loss, distance_loss = self.memorys[i](input_pool,label_batch)
 
             memory_rec = memory_rec.reshape((b, h_i, w_i, c)).permute((0, 3, 1, 2))
-
-            # 去除pos编码，pos编码仅在memBank重构时使用
-            memory_rec = memory_rec[:,self.pos_size:,:,:]
 
             memory_rec_list.append(memory_rec)
             entropy_loss_list.append(entropy_loss)
@@ -324,7 +339,6 @@ class BlockMemory(torch.nn.Module):
         
 
         upsample_concat = self.spatial_pyramid_upsample(memory_rec_list, (h,w))
-        # upsample_concat = input.repeat(1, len(self.memorys), 1, 1)
 
         return upsample_concat, sum(entropy_loss_list), sum(triplet_loss_list), sum(norm_loss_list), sum(compact_loss_list), sum(distance_loss_list)
 
