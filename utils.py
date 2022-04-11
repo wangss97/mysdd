@@ -6,6 +6,7 @@ import time
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2
+import torch
 
 def get_logger(file):
     fdir = os.path.split(file)[0]
@@ -17,8 +18,10 @@ def get_logger(file):
         print(f'日志文件不存在，创建新的日志文件:{file}')
         open(file, 'w')
 
-    logging.shutdown()
     logger = logging.getLogger(__name__)
+    for handler in logger.handlers:
+        logger.removeHandler(handler)
+
     logger.setLevel(level = logging.INFO)
     handler = logging.FileHandler(file)
     handler.setLevel(logging.INFO)
@@ -121,3 +124,47 @@ def toImg(dataBatch):
     
     return np.array(dataBatch, dtype=np.uint8)
 
+def patch_split(image:torch.Tensor, patch_size = 16, stride=16):
+    ''' 将image，分成patch
+        输入[b,c,h,w]
+        输出[b*patch_num, c, patch_size,patch_size]
+     '''
+    b, c, h, w = image.shape
+    # [b, c*kernel_size*kernel_size, patch_num]  其中的c*kernel_size*kernel_size即为切出的每一个patch块
+    image_patch = torch.nn.Unfold(kernel_size=patch_size,padding=0,stride=stride)(image)
+    b, K, patch_n = image_patch.shape
+    image_patch = torch.transpose(image_patch, 1, 2)    # [b, patch_n, K]
+    image_patch = torch.reshape(image_patch, (b*patch_n, c, patch_size, patch_size ))
+    return image_patch
+
+def mask_to_patchLabel(mask, patch_size=16, stride=16):
+    ''' mask [b,c,h,w] '''
+
+    mask_patch = patch_split(mask, patch_size, stride)
+    mask_patch = torch.sum(mask_patch,dim=[1,2,3])
+    label = mask_patch > 0
+    label = label.to(dtype=torch.long)
+    return label
+
+def patchLabel_to_mask(label, batchsize, pic_size, patch_size):
+    ''' label [batchsize * patch_num_h * patch_num_w]， 返回resize成原图大小的mask [b,c,h,w] '''
+    b, c = label.shape
+    patch_num = pic_size // patch_size
+    label = torch.reshape(label,(batchsize, patch_num, patch_num, c))
+    label = torch.permute(label, (0,3,1,2))
+
+    label = torch.nn.functional.interpolate(input=label, size=(pic_size,pic_size), mode='bilinear')
+    return label
+
+def mask_resize(mask, ratio, int_flag = False):
+    ''' 输入mask [b,c,h,w]， 按照ratio进行resize '''
+    size = mask.shape[2]
+    size_hat = int(size*ratio)
+    mask = torch.nn.functional.interpolate(input=mask, size=(size_hat, size_hat), mode='bilinear')
+    if int_flag:
+        mask = torch.ceil(mask)
+    return mask
+
+
+if __name__ == '__main__':
+    patch_split(None,None,2)

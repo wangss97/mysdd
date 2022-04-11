@@ -56,10 +56,10 @@ class Encoder(nn.Module):
         b4 = self.block4(mp3)
         mp4 = self.mp4(b4)
         b5 = self.block5(mp4)
-        return b2,b3,b4,b5
+        return b1,b2,b3,b4,b5
 
 class Decoder(torch.nn.Module):
-    def __init__(self, in_channel, block_list_size, out_channel) -> None:
+    def __init__(self, in_channel, block_list_size, out_channel, depth=4) -> None:
         super().__init__()
         self.preConv = torch.nn.Sequential(
             torch.nn.Conv2d(in_channels=in_channel*block_list_size, out_channels=in_channel, kernel_size=1, stride=1, padding=0),
@@ -70,47 +70,48 @@ class Decoder(torch.nn.Module):
             torch.nn.ReLU(inplace=True)
         )
 
-        self.up1 = DecoderUp(in_channel, in_channel//2)
-        in_channel = in_channel // 2
-        # self.up2 = DecoderUp(in_channel+in_channel+in_channel, in_channel//2)   #skip connect + concat,  in_channel = in_channel(上采样) + in_channel(mem跳步连接) +in_channel(原始跳步连接)
-        # self.up2 = DecoderUp(in_channel+in_channel, in_channel//2)   #skip connect,  in_channel = in_channel(上采样) + in_channel(mem跳步连接)
+        self.depth = depth
+        if self.depth == 4:
+            print(f'decoder depth {depth},expected bottleneck width: 16')
+        if self.depth == 5:
+            print(f'decoder depth {depth},expected bottleneck width: 8')
+
+        ''' 规则乘2上采样 '''
+        # self.up1 = DecoderUp(in_channel, in_channel//2)                                                                                                                                                        
+        # in_channel = in_channel // 2
+        ''' 与encoder对称上采样 '''
+        self.up1 = DecoderUp(in_channel, in_channel)
+        
         self.up2 = DecoderUp(in_channel, in_channel//2)   # no skip connect,  in_channel = in_channel(上采样)
         in_channel = in_channel // 2
         self.up3 = DecoderUp(in_channel, in_channel//2)   # no skip connect
         in_channel = in_channel // 2
         self.up4 = DecoderUp(in_channel, in_channel//2)   #no skip connect
         in_channel = in_channel // 2
-        # self.up5 = DecoderUp(in_channel, in_channel//2)   #no skip connect
-        # in_channel = in_channel // 2
+        if self.depth == 5:
+            self.up5 = DecoderUp(in_channel, in_channel//2)   #no skip connect
+            in_channel = in_channel // 2
 
         self.outConv = torch.nn.Conv2d(in_channels=in_channel, out_channels=out_channel, kernel_size=1, stride=1)
         # self.outActi = torch.nn.ReLU()
 
-    def forward(self, x1, x2, x3, x4):
+    def forward(self, x4):
         '''  '''
-        x4 = self.preConv(x4)
+        x4_hat = self.preConv(x4)
 
-        x3_hat = self.up1(x4)
-        # if skip
-        if x3 is not None:
-            x3_hat = torch.concat([x3_hat, x3],dim=1)
+        x3_hat = self.up1(x4_hat)
 
         x2_hat = self.up2(x3_hat)
-        # if skip
-        if x2 is not None:
-            x2_hat = torch.concat([x2_hat, x2], dim=1)
 
         x1_hat = self.up3(x2_hat)
-        # if skip
-        if x1 is not None:
-            x1_hat = torch.concat([x1_hat, x1], dim=1)
 
         x = self.up4(x1_hat)
-        # x = self.up5(x)
-        x = self.outConv(x)
-        # x = self.outActi(x)
+        if self.depth == 5:
+            x = self.up5(x)
 
-        return x
+        out = self.outConv(x)
+
+        return x4_hat, x3_hat, x2_hat, x1_hat, x, out
 
 class DecoderUp(torch.nn.Module):
     def __init__(self, in_channel, out_channel) -> None:

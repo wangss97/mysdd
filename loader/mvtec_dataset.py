@@ -15,16 +15,16 @@ from perlin import *
 
 
 class MVTecTestDataset_Draem(Dataset):
-    def __init__(self, pic_size, categroy) -> None:
+    def __init__(self, pic_size, category) -> None:
         super(MVTecTestDataset_Draem, self).__init__()
         self.pic_shape = (pic_size, pic_size)
-        self.categroy = categroy
+        self.category = category
         self.data_dir = '/root/test/wss/datasets/mvtec_anomaly_detection'
         self.data_list, self.mask_list = self.get_data_list()
 
         positive_count, negative_count, defect_type, count_perType = self.get_statistics()
         print("datasets info:")
-        print(f"categroy:{self.categroy}, positive count:{positive_count}, negative count:{negative_count}")
+        print(f"category:{self.category}, positive count:{positive_count}, negative count:{negative_count}")
         for i in range(len(defect_type)):
             print(f"{defect_type[i]}:{count_perType[i]} ", end='')
         print()
@@ -44,8 +44,8 @@ class MVTecTestDataset_Draem(Dataset):
 
     def get_data_list(self):
         ''' 获得数据路径列表 和 像素标签路径列表 '''
-        test_dir = os.path.join(self.data_dir, self.categroy, 'test')
-        groundtruth_dir = os.path.join(self.data_dir, self.categroy, 'ground_truth')
+        test_dir = os.path.join(self.data_dir, self.category, 'test')
+        groundtruth_dir = os.path.join(self.data_dir, self.category, 'ground_truth')
         defecttype_dirs = os.listdir(test_dir)
         data_list = []
         mask_list = []
@@ -87,12 +87,12 @@ class MVTecTestDataset_Draem(Dataset):
         return image, mask, label, image_path
 
 class MVTecTrainDataset_Draem(Dataset):
-    def __init__(self, pic_size, categroy, positive_aug_ratio, negative_aug_ratio) -> None:
+    def __init__(self, pic_size, category, positive_aug_ratio, negative_aug_ratio) -> None:
         super(MVTecTrainDataset_Draem, self).__init__()
         self.positive_aug_ratio = positive_aug_ratio
         self.negative_aug_ratio = negative_aug_ratio
         self.pic_shape = (pic_size, pic_size)
-        self.categroy = categroy
+        self.category = category
         self.data_dir = '/root/test/wss/datasets/mvtec_anomaly_detection'
         self.data_list = self.get_train_data_list()
         self.defect_source_list = self.get_defect_source_list()
@@ -124,7 +124,7 @@ class MVTecTrainDataset_Draem(Dataset):
 
         positive_count, negative_count, defect_type, count_perType = self.get_statistics()
         print("datasets info:")
-        print(f"categroy:{self.categroy}, positive count:{positive_count}, negative count:{negative_count}")
+        print(f"category:{self.category}, positive count:{positive_count}, negative count:{negative_count}")
         for i in range(len(defect_type)):
             print(f"{defect_type[i]}:{count_perType[i]} ", end='')
         print()
@@ -143,7 +143,7 @@ class MVTecTrainDataset_Draem(Dataset):
         return positive_count, negative_count, defect_type, count_perType
 
     def get_train_data_list(self):
-        fdir = os.path.join(self.data_dir, self.categroy, 'train/good')
+        fdir = os.path.join(self.data_dir, self.category, 'train/good')
         data_list = os.listdir(fdir)
         data_list = [os.path.join(fdir, item) for item in data_list]
         return data_list
@@ -151,7 +151,7 @@ class MVTecTrainDataset_Draem(Dataset):
     def get_defect_source_list(self):
         fdir = '/root/test/wss/datasets/dtd/images'
         return glob.glob(fdir+'/*/*.jpg')
-        # fdir = f'{self.data_dir}/{self.categroy}/train'
+        # fdir = f'{self.data_dir}/{self.category}/train'
         # return glob.glob(fdir+'/good/*.png')
 
     def get_augmented_positive(self, image):

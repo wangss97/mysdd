@@ -117,24 +117,199 @@ class BlockMemory_trainableFalse(nn.Module):
         return query_hat, mem_update
     
 
+class MemoryUnit_prototype(nn.Module):
+    def __init__(self,fea_map_size, mem_size, fea_dim, pos=False, skip= False):
+        super(MemoryUnit_prototype, self).__init__()
+        # 有几个mem item
+        self.mem_size = mem_size
+        # mem item的维度， 同时也是像素的维度
+        self.fea_dim = fea_dim
+
+        self.pos_embedding = Parameter(torch.randn((1, fea_dim, fea_map_size, fea_map_size)))
+
+        self.Mheads = nn.Linear(fea_dim, mem_size, bias=False)
+
+        self.pos = pos
+        self.skip = skip
+        print('proto mem:',end='')
+        if self.pos:
+            print('使用位置编码')
+        else:
+            print('不使用位置编码')
+        print('proto mem:',end='')
+        if self.skip:
+            print('mem跳步连接')
+        else:
+            print('mem没有跳步连接')
+
+        # self.new_cpt = 'False'
+        # print('proto mem: 使用旧的compact loss')
+        self.new_cpt = 'True'
+        print('proto mem: 使用新的compact loss')
+        # self.new_cpt = 'mix'
+        # print('proto mem: 使用混合compact loss')
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        stdv = 1. / math.sqrt(self.mem_size)
+        torch.nn.init.uniform_(self.Mheads.weight, -stdv, stdv)
+   
+    def compact_loss(self, proto:torch.Tensor, keys:torch.Tensor, score_of_proto:torch.Tensor):
+        ''' proto形状[b, m, d]， keys形状[b, h*w, d], score_of_proto形状[b, h*w, m],
+
+        让keys中每一个像素与距离它最近的proto向量更近
+         '''
+        B, M, D = proto.size()
+
+        _, gathering_indices = torch.topk(score_of_proto, 2, dim=-1)  # gathering_indicces形状[b, h*w, 2]
+
+        # 1st closest memories
+        # proto的形状[b, m, c]
+        # gathering_indices[:,:,:1].repeat((1,1,dims))形状[b, h*w, c]
+        # pos 的形状[b, h*w, c] 
+        if self.new_cpt == 'True':
+            pos = torch.gather(proto,1,gathering_indices[:,:,:1].repeat((1,1,D)))
+            compact_loss = torch.nn.MSELoss()(keys, pos)
+        elif self.new_cpt == 'False':
+            gathering_indices = gathering_indices[:,:,:1].repeat((1,1,D))
+            gathering_indices = torch.clip(gathering_indices, min=0, max=keys.shape[1]-1)
+            pos = torch.gather(keys,1,gathering_indices)
+            compact_loss = torch.nn.MSELoss()(keys, pos)
+        elif self.new_cpt == 'mix':
+            pos = torch.gather(proto,1,gathering_indices[:,:,:1].repeat((1,1,D)))
+            compact_loss1 = torch.nn.MSELoss()(keys, pos)
+
+            gathering_indices = gathering_indices[:,:,:1].repeat((1,1,D))
+            gathering_indices = torch.clip(gathering_indices, min=0, max=keys.shape[1]-1)
+            pos = torch.gather(keys,1,gathering_indices)
+            compact_loss2 = torch.nn.MSELoss()(keys, pos)
+
+            compact_loss = compact_loss1 + compact_loss2
+
+        return compact_loss
+
+    def distance_loss(self, proto:torch.Tensor):
+        ''' 让proto中的memory item彼此都离得更远, proto形状[b, m, fea_dim] '''
+
+        # [b, 1, m, d] - [b, m, 1, d] = [b, m, m, d]
+        # dis的形状是[b, m, m]，表示proto之间的相似度， 1是margin
+        dis = 1 - torch.square(proto.unsqueeze(1) - proto.unsqueeze(2)).sum(-1)
+        
+        mask = dis>0
+        # 此处dis只保留了距离在1以内的proto (目标是所有proto之间的距离都大于margin)
+        dis *= mask.float()
+        # 保留上三角矩阵,不保留主对角线
+        dis = torch.triu(dis, diagonal=1)
+        # 所有proto之间的距离相加,一共self.mem_size*(self.mem_size-1) / 2个距离, 期望 1-dis越来越小,即dis越来越大,即proto之间的距离都变大
+        dis_loss = dis.sum(1).sum(1)*2/(self.mem_size*(self.mem_size-1))
+        dis_loss = dis_loss.mean()
+
+        return dis_loss
+
+    def l1_loss(self, score_of_proto:torch.Tensor):
+        ''' 让score_of_proto尽量稀疏的损失 '''
+        return torch.norm(score_of_proto, p=1, dim=list(range(len(score_of_proto.shape))))
+
+    def get_score(self, proto:torch.Tensor, query:torch.Tensor):
+        ''' proto 形状 [bs, m, fea_dim]
+            query 形状 [bs, h*w, fea_dim]
+            该函数输出形状 [bs, h*w, m]，输出像素与每个原型的相关度
+         '''
+        b, m, d = proto.size()
+        b, n, d = query.size()
+
+        # [b, n, d] bmm [b, d, m] = [b, n, m]
+        score = torch.bmm(query, proto.permute(0,2,1))
+
+        score_of_proto = torch.softmax(score, dim=-1)
+
+        return score_of_proto
+
+    def forward(self, input:torch.Tensor, label_batch):
+        ''' 输入形状[b, c, h, w]
+        流程，1，用key和Mheads算出每个像素对原型的贡献度
+        2，用key和贡献度算出原型
+        3，用query和原型算出和原型的相关度
+        4，用相关度和原型得到重构后的query作为输出
+         '''
+        B, C, H, W = input.size()
+        # 加入位置编码 相加
+        if self.pos:
+            input = input + self.pos_embedding
+
+        # key用于构造proto
+        key = input
+        key = key.permute(0,2,3,1).reshape(B, -1, C)
+        # query用于构造输出
+        query = input
+        query = query.permute(0,2,3,1).reshape(B, -1, C)
+
+        proto_weight = self.Mheads(key)  # 输出为[b, h*w, m]
+        # 对proto_weight进行softmax，维度是h*w，表示一副图上所有像素对某一个原型的贡献度和是1
+        proto_weight = F.softmax(proto_weight, dim = 1)
+
+        # [b, m, h*w] 矩阵乘 [b, h*w, d] 得到 [b, m, d]
+        proto = torch.matmul(proto_weight.permute(0,2,1),key)
+
+        # 令每个proto向量是标准向量
+        proto = F.normalize(proto, dim=-1)
+
+        score_of_proto = self.get_score(proto, query)  # [b, h*w, m]
+
+        # [b, h*w, m] 矩阵乘  [b, m, d] 得到 [b, h*w, d]，表示重组后的特征图  
+        new_query = torch.matmul(score_of_proto, proto)
+        # 令重组的特征图的每个像素是标准向量
+        new_query = F.normalize(new_query, dim=-1)
+ 
+        # 获得训练proto用的损失 
+        compact_loss = self.compact_loss(proto, query, score_of_proto)
+        distance_loss = self.distance_loss(proto)
+        l1_loss = self.l1_loss(score_of_proto)
+
+        # 跳步连接
+        if self.skip:
+            new_query = new_query + query
+
+        # reshape
+        new_query = new_query.permute(0,2,1).reshape(B, C, H, W)
+
+        # return new_query, compact_loss, distance_loss, l1_loss
+        return new_query, compact_loss, distance_loss
+
+
 class MemoryUnit(nn.Module):
-    def __init__(self, input_size, mem_size, fea_dim, shrink_thres=0.0025, device='cuda'):
+    def __init__(self,fea_map_size, mem_size, fea_dim, shrink_thres=0.0025,pos=False,skip=False):
         super(MemoryUnit, self).__init__()
         self.mem_size = mem_size
         self.fea_dim = fea_dim
-        self.input_size = input_size
         self.weight = Parameter(torch.Tensor(self.mem_size, self.fea_dim))  # M x C
+
+        self.pos_embedding = Parameter(torch.randn((1, fea_dim, fea_map_size, fea_map_size)))
 
         # self.acti = torch.nn.Sigmoid()
         self.bias = None
         self.shrink_thres= shrink_thres
         # self.hard_sparse_shrink_opt = nn.Hardshrink(lambd=shrink_thres)
 
+        self.pos = pos
+        self.skip = skip
+        print('mem:',end='')
+        if self.pos:
+            print('使用位置编码')
+        else:
+            print('不使用位置编码')
+        if self.skip:
+            print('mem跳步连接')
+        else:
+            print('mem没有跳步连接')
+
         self.reset_parameters()
 
     def reset_parameters(self):
         stdv = 1. / math.sqrt(self.weight.size(1))
-        self.weight.data.uniform_(-stdv, stdv)
+        torch.nn.init.uniform_(self.weight, -stdv, stdv)
+        # self.weight.data.uniform_(-stdv, stdv)
         if self.bias is not None:
             self.bias.data.uniform_(-stdv, stdv)
 
@@ -200,12 +375,18 @@ class MemoryUnit(nn.Module):
 
 
     def forward(self, input:torch.Tensor, label_batch):
-        ''' 输入形状[b*h*w, c], self.weight形状[m, c] '''
-        T,C = input.size()
+        ''' 输入形状[b,c,h,w], self.weight形状[m, c] '''
+        b, c, h, w = input.size()
+        
+        # 位置编码
+        if self.pos:
+            input = input + self.pos_embedding
+
+        input_reshape = input.permute((0,2,3,1)).reshape((-1,c))
         M,C = self.weight.size()
         # att_weight = -torch.norm(input.reshape(T, 1, C) - self.weight.reshape(1, M, C), dim=2)    # TxM
 
-        att_weight = F.linear(input, self.weight)  # Fea x Mem^T, (TxC) x (CxM) = TxM
+        att_weight = F.linear(input_reshape, self.weight)  # Fea x Mem^T, (TxC) x (CxM) = TxM
 
         att_weight = F.softmax(att_weight, dim=1)  # TxM
         
@@ -214,8 +395,8 @@ class MemoryUnit(nn.Module):
         # print(torch.max(att_weight,dim=1))
         # print(torch.norm(self.weight, dim=1))
         # quit()
-        triplet_loss = self.triplet_margin_loss(input, att_weight)
-        compact_loss = self.compact_loss(input, att_weight, label_batch)
+        triplet_loss = self.triplet_margin_loss(input_reshape, att_weight)
+        compact_loss = self.compact_loss(input_reshape, att_weight, label_batch)
         distance_loss = self.distance_loss()
 
         # ReLU based shrinkage, hard shrinkage for positive value
@@ -231,10 +412,16 @@ class MemoryUnit(nn.Module):
         mem_trans = self.weight.permute(1, 0)  # Mem^T, MxC
         output = F.linear(att_weight, mem_trans)  # AttWeight x Mem^T^T = AW x Mem, (TxM) x (MxC) = TxC
         # output = F.normalize(output, dim=-1)
+        output = output.reshape((b,h,w,c)).permute((0,3,1,2))
+
+        # 跳步连接
+        if self.skip:
+            output = output + input
 
         norm_loss = torch.abs(1 - torch.norm(self.weight, 2, dim=1)).mean()
         entropy_loss = EntropyLoss()(att_weight)
-        return output, entropy_loss, triplet_loss, norm_loss, compact_loss, distance_loss   # output, att_weight
+        # return output, entropy_loss, triplet_loss, norm_loss, compact_loss, distance_loss   # output, att_weight
+        return output, compact_loss, distance_loss   # output, att_weight
 
     def extra_repr(self):
         return 'mem_size={}, fea_dim={}'.format(
@@ -243,25 +430,21 @@ class MemoryUnit(nn.Module):
 
 # relu based hard shrinkage function, only works for positive values
 def hard_shrink_relu(input, lambd=0, epsilon=1e-12):
-    output = (F.relu(input-lambd) * input) / (torch.abs(input - lambd) + epsilon)
+    output = (F.relu(input-lambd) * input) / (torch.abs(input - lambd) + epsilon) 
     return output
 
 class BlockMemory(torch.nn.Module):
-    def __init__(self, block_list, mem_size_list, fea_dim, pos_ebd_weight = 1., shrink_thres=0.0025, device='cuda') -> None:
+    def __init__(self, block_list=[16], mem_size_list=[50], fea_dim=1024, shrink_thres=0.0025,pos=False,skip=False, device='cuda') -> None:
         super().__init__()
 
         memorys = []
-        pos_embeddings = []
-        self.upsamplers = []
         self.block_list = block_list
         self.device = device
-        self.pos_ebd_weight = pos_ebd_weight
 
         for i in range(len(block_list)):
-            memorys.append(MemoryUnit(input_size = block_list[i], mem_size = mem_size_list[i], fea_dim = fea_dim, shrink_thres = shrink_thres, device = device))
-            pos_embeddings.append(Parameter(torch.randn((1, fea_dim, block_list[i], block_list[i]))))
+            memorys.append(MemoryUnit_prototype(fea_map_size=block_list[i], mem_size=mem_size_list[i], fea_dim=fea_dim, pos=pos, skip=skip))
+            # memorys.append(MemoryUnit(fea_map_size=block_list[i], mem_size = mem_size_list[i], fea_dim = fea_dim, shrink_thres = shrink_thres,pos=pos,skip=skip))
 
-        self.pos_embeddings = nn.ParameterList(pos_embeddings)
         self.memorys = nn.ModuleList(memorys)
 
     def spatial_pyramid_pool(self, input, out_pool_size:list):
@@ -317,18 +500,13 @@ class BlockMemory(torch.nn.Module):
         norm_loss_list = []
         compact_loss_list = []
         distance_loss_list = []
+        l1_loss_list = []
         
         for i, input_pool in enumerate(input_pool_list):
-            b, c, h_i, w_i = input_pool.size()
 
-            # 加入位置编码 相加
-            # input_pool = input_pool + self.pos_ebd_weight * self.pos_embeddings[i]
+            entropy_loss, triplet_loss, norm_loss, l1_loss = 0, 0, 0, 0
 
-            input_pool = input_pool.permute((0,2,3,1)).reshape((-1,c))
-
-            memory_rec, entropy_loss, triplet_loss, norm_loss, compact_loss, distance_loss = self.memorys[i](input_pool,label_batch)
-
-            memory_rec = memory_rec.reshape((b, h_i, w_i, c)).permute((0, 3, 1, 2))
+            memory_rec, compact_loss, distance_loss = self.memorys[i](input_pool,label_batch)
 
             memory_rec_list.append(memory_rec)
             entropy_loss_list.append(entropy_loss)
@@ -336,11 +514,13 @@ class BlockMemory(torch.nn.Module):
             norm_loss_list.append(norm_loss)
             compact_loss_list.append(compact_loss)
             distance_loss_list.append(distance_loss)
+            l1_loss_list.append(l1_loss)
         
 
         upsample_concat = self.spatial_pyramid_upsample(memory_rec_list, (h,w))
 
-        return upsample_concat, sum(entropy_loss_list), sum(triplet_loss_list), sum(norm_loss_list), sum(compact_loss_list), sum(distance_loss_list)
+        return upsample_concat, sum(entropy_loss_list), sum(triplet_loss_list), \
+            sum(norm_loss_list), sum(compact_loss_list), sum(distance_loss_list), sum(l1_loss_list)
 
 if __name__ == '__main__':
 

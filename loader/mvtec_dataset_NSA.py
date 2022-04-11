@@ -64,27 +64,27 @@ TEXTURES = ['carpet', 'grid', 'leather', 'tile', 'wood']
 
 
 class MVTecTestDataset_NSA(Dataset):
-    def __init__(self, data_dir='/root/test/wss/datasets/mvtec_anomaly_detection', pic_size=256, categroy='bottle') -> None:
+    def __init__(self, data_dir='/root/test/wss/datasets/mvtec_anomaly_detection', pic_size=256, category='bottle') -> None:
         super(MVTecTestDataset_NSA, self).__init__()
         self.pic_shape = (pic_size, pic_size)
-        self.categroy = categroy
+        self.category = category
         self.data_dir = data_dir
         self.data_list, self.mask_list = self.get_data_list()
 
         positive_count, negative_count, defect_type, count_perType = self.get_statistics()
         print("datasets info:")
-        print(f"categroy:{self.categroy}, positive count:{positive_count}, negative count:{negative_count}")
+        print(f"category:{self.category}, positive count:{positive_count}, negative count:{negative_count}")
         for i in range(len(defect_type)):
             print(f"{defect_type[i]}:{count_perType[i]} ", end='')
         print()
 
-        if categroy in UNALIGNED_OBJECTS:
+        if category in UNALIGNED_OBJECTS:
             self.crop_transform = T.Compose([
                     T.RandomRotation(5),
                     T.CenterCrop(230), 
                     T.RandomCrop(224),
                     T.Resize(pic_size)])
-        elif categroy in OBJECTS:
+        elif category in OBJECTS:
             # no rotation for aligned objects
             self.crop_transform = T.Compose([
                     T.CenterCrop(230),
@@ -116,8 +116,8 @@ class MVTecTestDataset_NSA(Dataset):
 
     def get_data_list(self):
         ''' 获得数据路径列表 和 像素标签路径列表 '''
-        test_dir = os.path.join(self.data_dir, self.categroy, 'test')
-        groundtruth_dir = os.path.join(self.data_dir, self.categroy, 'ground_truth')
+        test_dir = os.path.join(self.data_dir, self.category, 'test')
+        groundtruth_dir = os.path.join(self.data_dir, self.category, 'ground_truth')
         defecttype_dirs = os.listdir(test_dir)
         data_list = []
         mask_list = []
@@ -157,11 +157,11 @@ class MVTecTestDataset_NSA(Dataset):
 
 
 class MVTecTrainDataset_NSA(Dataset):
-    def __init__(self, data_dir='/root/test/wss/datasets/mvtec_anomaly_detection', categroy='bottle', pic_size=256,positive_aug_ratio=5,negative_aug_ratio=5, self_sup_args={}):
+    def __init__(self, data_dir='/root/test/wss/datasets/mvtec_anomaly_detection', category='bottle', pic_size=256,positive_aug_ratio=5,negative_aug_ratio=5, self_sup_args={}):
         super(MVTecTrainDataset_NSA, self).__init__()
-        assert categroy in CLASS_NAMES, 'class_name: {}, should be in {}'.format(categroy, CLASS_NAMES)
+        assert category in CLASS_NAMES, 'class_name: {}, should be in {}'.format(category, CLASS_NAMES)
         self.data_dir = data_dir
-        self.class_name = categroy
+        self.class_name = category
         self.positive_aug_ratio = positive_aug_ratio
         self.negative_aug_ratio = negative_aug_ratio
         self.low_res = pic_size
@@ -182,7 +182,7 @@ class MVTecTrainDataset_NSA(Dataset):
         if self.class_name in UNALIGNED_OBJECTS:
             self.crop_transform = T.Compose([
                     T.RandomRotation(5),
-                    T.CenterCrop(230), 
+                    T.CenterCrop(230),
                     T.RandomCrop(224),
                     T.Resize(self.low_res)])
         elif self.class_name in OBJECTS:
@@ -232,7 +232,6 @@ class MVTecTrainDataset_NSA(Dataset):
         return list(xs), x_paths
 
     def get_augmented_negative(self, image):
-        image = self.crop_transform(image)
         image = np.asarray(image)[...,::-1].copy()    #转换成BGR
         image_defect = np.array(image, dtype=np.uint8)
         mask = np.zeros([1,self.low_res, self.low_res], dtype=np.float32)
@@ -241,8 +240,6 @@ class MVTecTrainDataset_NSA(Dataset):
         return self.norm_transform(image), self.norm_transform(image_defect), torch.tensor(mask), label
     
     def get_augmented_positive(self, image, defect_source):
-        image = self.crop_transform(image)
-        defect_source = self.crop_transform(defect_source)
         image = np.asarray(image)
         defect_source = np.asarray(defect_source)
 
