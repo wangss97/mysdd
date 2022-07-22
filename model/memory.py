@@ -138,16 +138,17 @@ class MemoryUnit_prototype(nn.Module):
             print('不使用位置编码')
         print('proto mem:',end='')
         if self.skip:
-            print('mem跳步连接')
+            print('跳步连接')
         else:
-            print('mem没有跳步连接')
+            print('没有跳步连接')
 
         # self.new_cpt = 'False'
         # print('proto mem: 使用旧的compact loss')
         self.new_cpt = 'True'
-        print('proto mem: 使用新的compact loss')
-        # self.new_cpt = 'mix'
-        # print('proto mem: 使用混合compact loss')
+        print('使用新的compact loss')
+        
+        # print('只用正常样本更新compact loss')
+        print('用所有样本更新compact loss')
 
         self.reset_parameters()
 
@@ -156,7 +157,7 @@ class MemoryUnit_prototype(nn.Module):
         torch.nn.init.uniform_(self.Mheads.weight, -stdv, stdv)
    
     def compact_loss(self, proto:torch.Tensor, keys:torch.Tensor, score_of_proto:torch.Tensor):
-        ''' proto形状[b, m, d]， keys形状[b, h*w, d], score_of_proto形状[b, h*w, m],
+        ''' proto形状[b, m, d]， keys形状[b, h*w, d], score_of_proto形状[b, h*w, m], mask_batch形状[b,1,h,w]
 
         让keys中每一个像素与距离它最近的proto向量更近
          '''
@@ -170,22 +171,17 @@ class MemoryUnit_prototype(nn.Module):
         # pos 的形状[b, h*w, c] 
         if self.new_cpt == 'True':
             pos = torch.gather(proto,1,gathering_indices[:,:,:1].repeat((1,1,D)))
-            compact_loss = torch.nn.MSELoss()(keys, pos)
+            compact_loss = torch.nn.MSELoss()(keys, pos) 
+            ''' 仅正常样本更新compact '''
+            # compact_loss = torch.nn.MSELoss(reduction='none')(keys, pos)
+            # compact_loss = compact_loss[label_batch == 0].mean()
+            # if torch.all(label_batch == 1):
+            #     compact_loss = torch.zeros_like(compact_loss, device=compact_loss.device)
         elif self.new_cpt == 'False':
             gathering_indices = gathering_indices[:,:,:1].repeat((1,1,D))
             gathering_indices = torch.clip(gathering_indices, min=0, max=keys.shape[1]-1)
             pos = torch.gather(keys,1,gathering_indices)
             compact_loss = torch.nn.MSELoss()(keys, pos)
-        elif self.new_cpt == 'mix':
-            pos = torch.gather(proto,1,gathering_indices[:,:,:1].repeat((1,1,D)))
-            compact_loss1 = torch.nn.MSELoss()(keys, pos)
-
-            gathering_indices = gathering_indices[:,:,:1].repeat((1,1,D))
-            gathering_indices = torch.clip(gathering_indices, min=0, max=keys.shape[1]-1)
-            pos = torch.gather(keys,1,gathering_indices)
-            compact_loss2 = torch.nn.MSELoss()(keys, pos)
-
-            compact_loss = compact_loss1 + compact_loss2
 
         return compact_loss
 
@@ -226,7 +222,7 @@ class MemoryUnit_prototype(nn.Module):
 
         return score_of_proto
 
-    def forward(self, input:torch.Tensor, label_batch):
+    def forward(self, input:torch.Tensor):
         ''' 输入形状[b, c, h, w]
         流程，1，用key和Mheads算出每个像素对原型的贡献度
         2，用key和贡献度算出原型
@@ -265,7 +261,6 @@ class MemoryUnit_prototype(nn.Module):
         # 获得训练proto用的损失 
         compact_loss = self.compact_loss(proto, query, score_of_proto)
         distance_loss = self.distance_loss(proto)
-        l1_loss = self.l1_loss(score_of_proto)
 
         # 跳步连接
         if self.skip:
@@ -274,7 +269,6 @@ class MemoryUnit_prototype(nn.Module):
         # reshape
         new_query = new_query.permute(0,2,1).reshape(B, C, H, W)
 
-        # return new_query, compact_loss, distance_loss, l1_loss
         return new_query, compact_loss, distance_loss
 
 
@@ -468,11 +462,12 @@ class BlockMemory(torch.nn.Module):
                 maxpool = nn.MaxPool2d((h, w), padding=0)
                 input_pool = maxpool(input)
             else:
-                h_wid = int(math.ceil(h / out_pool_size[i]))
-                w_wid = int(math.ceil(w / out_pool_size[i]))
-                h_pad = math.ceil((h_wid*out_pool_size[i] - h )/2)
-                w_pad = math.ceil((w_wid*out_pool_size[i] - w )/2)
-                maxpool = nn.MaxPool2d((h_wid, w_wid), stride=(h_wid, w_wid), padding=(h_pad, w_pad))
+                maxpool = nn.AdaptiveMaxPool2d(output_size=(out_pool_size[i],out_pool_size[i]))
+                # h_wid = int(math.ceil(h / out_pool_size[i]))
+                # w_wid = int(math.ceil(w / out_pool_size[i]))
+                # h_pad = math.ceil((h_wid*out_pool_size[i] - h )/2)
+                # w_pad = math.ceil((w_wid*out_pool_size[i] - w )/2)
+                # maxpool = nn.MaxPool2d((h_wid, w_wid), stride=(h_wid, w_wid), padding=(h_pad, w_pad))
                 input_pool = maxpool(input)
             input_pool_list.append(input_pool)
 
@@ -488,39 +483,28 @@ class BlockMemory(torch.nn.Module):
         
         return input_upsample_concat
     
-    def forward(self, input:torch.Tensor, label_batch):
+    def forward(self, input:torch.Tensor):
         ''' input shape [b, c, h, w] '''
         b, c, h, w = input.size()
 
         input_pool_list = self.spatial_pyramid_pool(input, self.block_list)
 
         memory_rec_list = []
-        entropy_loss_list = []
-        triplet_loss_list = []
-        norm_loss_list = []
         compact_loss_list = []
         distance_loss_list = []
-        l1_loss_list = []
         
         for i, input_pool in enumerate(input_pool_list):
 
-            entropy_loss, triplet_loss, norm_loss, l1_loss = 0, 0, 0, 0
+            memory_rec, compact_loss, distance_loss = self.memorys[i](input_pool)
 
-            memory_rec, compact_loss, distance_loss = self.memorys[i](input_pool,label_batch)
 
             memory_rec_list.append(memory_rec)
-            entropy_loss_list.append(entropy_loss)
-            triplet_loss_list.append(triplet_loss)
-            norm_loss_list.append(norm_loss)
             compact_loss_list.append(compact_loss)
             distance_loss_list.append(distance_loss)
-            l1_loss_list.append(l1_loss)
-        
 
         upsample_concat = self.spatial_pyramid_upsample(memory_rec_list, (h,w))
 
-        return upsample_concat, sum(entropy_loss_list), sum(triplet_loss_list), \
-            sum(norm_loss_list), sum(compact_loss_list), sum(distance_loss_list), sum(l1_loss_list)
+        return upsample_concat, sum(compact_loss_list), sum(distance_loss_list)
 
 if __name__ == '__main__':
 

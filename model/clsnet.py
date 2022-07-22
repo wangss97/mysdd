@@ -124,6 +124,52 @@ class clsDecoder2(nn.Module):
         return out
 
 class clsNet2(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, inchannel=65) -> None:
         super().__init__()
-        
+
+        self.down1 = torch.nn.MaxPool2d(2)
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(65, 8, kernel_size=5, padding=2),
+            nn.BatchNorm2d(8),
+            nn.ReLU(inplace=True),
+        )
+        self.down2 = nn.MaxPool2d(2)
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(8, 16, kernel_size=5, padding=2),
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True),
+        )
+        self.down3 = nn.MaxPool2d(2)
+        self.conv3 = nn.Sequential(
+            nn.Conv2d(16, 32, kernel_size=5, padding=2),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+        )
+
+        self.Conv = nn.Sequential(
+            self.down1,
+            self.conv1,
+            self.down2,
+            self.conv2,
+            self.down3,
+            self.conv3
+        )
+
+        self.maxPool = nn.AdaptiveMaxPool2d((1,1))
+        self.avgPool = nn.AdaptiveAvgPool2d((1,1))
+
+        self.fc = nn.Linear(66, 2)
+
+    def forward(self, features, mask):
+        mask = torch.softmax(mask,dim=1)[:,1:,:,:]
+        x = torch.concat([features, mask],dim=1)
+        x = self.Conv(x)
+        x_mean = self.avgPool(x)
+        x_max = self.maxPool(x)
+        mask_mean = self.avgPool(mask)
+        mask_max = self.maxPool(mask)
+
+        vector = torch.concat([x_mean,x_max,mask_mean,mask_max], dim=1)
+        vector = torch.flatten(vector, 1)
+        logit = self.fc(vector)
+        return logit

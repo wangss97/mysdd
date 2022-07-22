@@ -4,6 +4,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms as T
 import os
 import cv2
+import random
 import numpy as np
 import imgaug.augmenters as iaa
 import sys
@@ -12,12 +13,12 @@ from loader.mvtec_dataset_NSA import BACKGROUND
 import utils
 from perlin import *
 
-class MVTecTestDataset_Draem(Dataset):
+class DAGMTestDataset(Dataset):
     def __init__(self, pic_size, category) -> None:
-        super(MVTecTestDataset_Draem, self).__init__()
+        super(DAGMTestDataset, self).__init__()
         self.pic_shape = (pic_size, pic_size)
         self.category = category
-        self.data_dir = '/root/test/wss/datasets/mvtec_anomaly_detection'
+        self.data_dir = '/root/test/wss/datasets/DAGM'
         self.data_list, self.mask_list = self.get_data_list()
 
         positive_count, negative_count, defect_type, count_perType = self.get_statistics()
@@ -42,56 +43,47 @@ class MVTecTestDataset_Draem(Dataset):
 
     def get_data_list(self):
         ''' 获得数据路径列表 和 像素标签路径列表 '''
-        test_dir = os.path.join(self.data_dir, self.category, 'test')
-        groundtruth_dir = os.path.join(self.data_dir, self.category, 'ground_truth')
-        defecttype_dirs = os.listdir(test_dir)
-        data_list = []
-        mask_list = []
-        for tdir in defecttype_dirs:
-            data_fdir = os.path.join(test_dir, tdir)
-            type_data_list = os.listdir(data_fdir)
-            data_list += [os.path.join(data_fdir, item) for item in type_data_list]
-
-            label_fdir = os.path.join(groundtruth_dir, tdir)
-            type_mask_list = [item[:-4]+'_mask'+item[-4:] for item in type_data_list]
-            mask_list += [os.path.join(label_fdir, item) for item in type_mask_list]
-        return data_list, mask_list
+        test_dir = os.path.join(self.data_dir, self.category, 'Test')
+        data_list = os.listdir(test_dir)
+        data_list = [item for item in data_list if 'PNG' in item]
+        data_path = [os.path.join(test_dir, item) for item in data_list]
+        mask_path = [os.path.join(test_dir, 'Label', item[:-4]+'_label.PNG') for item in data_list]
+        return data_path, mask_path
     
     def __getitem__(self, idx):
         ''' 测试时,返回样本， 像素标签， 图片标签， 图片路径， 像素标签路径 '''
         image_path = self.data_list[idx]
-        image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+        image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
         image = cv2.resize(image, self.pic_shape)
         image = image.astype(np.uint8)
         transformer = T.Compose([
-                T.ToTensor(), 
-                T.Normalize(mean=[0.406, 0.456, 0.485], std=[0.225, 0.224, 0.229])])   #BGR
+                T.ToTensor() 
+                ]) 
 
         image = transformer(image)
 
         mask_path = self.mask_list[idx]
-        defecttype = str.split(mask_path, '/')[-2]
-        if defecttype == 'good':
-            mask = torch.zeros([1,self.pic_shape[0],self.pic_shape[1]])
-            label = 0
-        else:
+        if os.path.exists(mask_path):
             # 转换为二值图像
             mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
             mask = cv2.resize(mask, self.pic_shape)
             mask = np.where(mask>128, 255, 0).astype(np.uint8)
             mask = T.ToTensor()(mask)
             label = 1
+        else:
+            mask = torch.zeros([1,self.pic_shape[0],self.pic_shape[1]])
+            label = 0
         
         return image, mask, label, image_path
 
-class MVTecTrainDataset_Draem(Dataset):
+class DAGMTrainDataset(Dataset):
     def __init__(self, pic_size, category, positive_aug_ratio, negative_aug_ratio) -> None:
-        super(MVTecTrainDataset_Draem, self).__init__()
+        super(DAGMTrainDataset, self).__init__()
         self.positive_aug_ratio = positive_aug_ratio
         self.negative_aug_ratio = negative_aug_ratio
         self.pic_shape = (pic_size, pic_size)
         self.category = category
-        self.data_dir = '/root/test/wss/datasets/mvtec_anomaly_detection'
+        self.data_dir = '/root/test/wss/datasets/DAGM'
         self.data_list = self.get_train_data_list()
         self.defect_source_list = self.get_defect_source_list()
 
@@ -141,11 +133,16 @@ class MVTecTrainDataset_Draem(Dataset):
         return positive_count, negative_count, defect_type, count_perType
 
     def get_train_data_list(self):
-        fdir = os.path.join(self.data_dir, self.category, 'train/good')
+        fdir = os.path.join(self.data_dir, self.category, 'Train')
         data_list = os.listdir(fdir)
-        # num = 50
-        # data_list = data_list[:num]
+        data_list = [item for item in data_list if 'PNG' in item]
+
+        defect_list = os.listdir(os.path.join(fdir, 'Label'))
+        defect_list = [item for item in defect_list if 'PNG' in item]
+
+        data_list = [item for item in data_list if item[:-4]+'_label.PNG' not in defect_list]
         data_list = [os.path.join(fdir, item) for item in data_list]
+
         return data_list
     
     def get_defect_source_list(self):
@@ -188,64 +185,28 @@ class MVTecTrainDataset_Draem(Dataset):
         defect_image = image_norm_part + beta * image_defect_part + (1-beta) * defect_source_defect_part
         defect_image = np.array(defect_image, dtype=np.uint8)
 
-        ''' 按seamlessclone拼接 '''
-        # defect_image = image.copy()
-        # num_labels, labels = cv2.connectedComponents(perlin_noise_bin, connectivity=8)
-        # for idx in range(1, num_labels):
-        #     mask_roi= np.zeros_like(perlin_noise_bin)
-        #     k = labels == idx
-        #     mask_roi[k] = 255         # 单个联通分量
-        #     cnts = cv2.findContours(mask_roi, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[-2]   # 只有一个轮廓
-        #     x, y, w, h = cv2.boundingRect(cnts[0])
-        #     if x <= 3 and y <= 3:
-        #         perlin_noise_bin[k] = 0
-        #         continue
-        #     if (w <= 20 and h <= 20 )or  cv2.contourArea(cnts[0]) < 400:
-        #         # 使用透光率拼接
-        #         mask_roi = mask_roi.astype(np.float32) / 255
-        #         # 原图正常部分
-        #         image_norm_part = np.array(defect_image,dtype=np.float32) * (1-mask_roi)
-
-        #         # 原图缺陷部分
-        #         image_defect_part = np.array(defect_image, dtype=np.float32) * mask_roi
-
-        #         # 透光率
-        #         beta = np.random.rand() * 0.8  # 保证合成时缺陷更明显一点
-
-        #         # 缺陷来源图的缺陷部分
-        #         defect_source_defect_part = defect_source * mask_roi
-
-        #         defect_image = image_norm_part + beta * image_defect_part + (1-beta) * defect_source_defect_part
-        #         defect_image = defect_image.astype(np.uint8)
-        #         continue
-        #     # 使用seamless拼接
-        #     try:
-        #         defect_image = cv2.seamlessClone(src=defect_source[y:y+h,x:x+w], dst=defect_image, mask=mask_roi[y:y+h,x:x+w], p=(x+w//2,y+h//2), flags=cv2.NORMAL_CLONE)
-        #     except:
-        #         perlin_noise_bin[k] = 0
-        # perlin_noise_bin = perlin_noise_bin.astype(np.float32)/255
-        
-        # utils.visualize([image, defect_source, np.array(perlin_noise_bin,dtype=np.uint8), defect_image], './tmp', 'tmp.jpg')
-
         if 1. in perlin_noise_bin:
             label = 1
         else:
             label = 0
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        defect_image = cv2.cvtColor(defect_image, cv2.COLOR_BGR2GRAY)
         transformer = T.Compose([
-                T.ToTensor(), 
-                T.Normalize(mean=[0.406, 0.456, 0.485], std=[0.225, 0.224, 0.229])])   #BGR
+                T.ToTensor() 
+                ])   #BGR
 
         return transformer(image), transformer(defect_image), torch.tensor(perlin_noise_bin).permute((2,0,1)), label
 
     def get_augmented_negative(self, image):
         image = self.negativa_augmenters(image = image)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         defect_image = np.array(image, dtype=np.uint8)
         mask = np.zeros([1,self.pic_shape[0], self.pic_shape[1]], dtype=np.float32)
         label = 0
 
         transformer = T.Compose([
-                T.ToTensor(), 
-                T.Normalize(mean=[0.406, 0.456, 0.485], std=[0.225, 0.224, 0.229])])   #BGR
+                T.ToTensor() 
+                ])   #BGR
 
         return transformer(image), transformer(defect_image), torch.tensor(mask), label
 
@@ -271,7 +232,7 @@ class MVTecTrainDataset_Draem(Dataset):
 
 if __name__ == '__main__':
 
-    dataset = MVTecTrainDataset_Draem(256, 'bottle', 1, 0)
+    dataset = DAGMTrainDataset(256, 'bottle', 1, 0)
     dataset.__getitem__(10)
     quit()
 
