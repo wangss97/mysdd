@@ -180,8 +180,8 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2, dilate=replace_stride_with_dilation[0])
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2, dilate=replace_stride_with_dilation[1])
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2, dilate=replace_stride_with_dilation[2])
-        #self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        #self.fc = nn.Linear(512 * block.expansion, num_classes)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(512 * block.expansion, num_classes)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -244,10 +244,10 @@ class ResNet(nn.Module):
         # print('x4',x4.shape)
 
         # remove extra layers
-        #x = self.avgpool(x)
-        #x = torch.flatten(x, 1)
-        #x = self.fc(x)
-        return x, x1, x2, x3, x4
+        x = self.avgpool(x4)
+        xflatten = torch.flatten(x, 1)
+        x = self.fc(xflatten)
+        return x, xflatten
 
     def forward(self, x: Tensor) -> Tensor:
         return self._forward_impl(x)

@@ -3,6 +3,65 @@ import cv2
 import sys
 from skimage.morphology import disk
 from skimage.filters import median
+import imgaug.augmenters as iaa
+from perlin import *
+
+
+def patch_aug(img_dest, img_src):
+    ''' img_dest为目标， img_src为缺陷源。构造随机柏林噪声当作掩码，把缺陷源上的照片泊松融合到目标上
+        返回缺陷图片(0,255)，掩码(0,1.), 图片标签0或1
+    '''
+    
+    rot = iaa.Sequential([iaa.Affine(rotate=(-90,90))])
+
+    # 应用于缺陷源图片dtd的图像增广方式
+    positive_augmenters = iaa.SomeOf(3, [
+                iaa.GammaContrast((0.5,2.0),per_channel=True),
+                iaa.MultiplyAndAddToBrightness(mul=(0.8,1.2),add=(-30,30)),
+                iaa.pillike.EnhanceSharpness(),
+                iaa.AddToHueAndSaturation((-50,50),per_channel=True),
+                iaa.Solarize(0.5, threshold=(32,128)),
+                iaa.Posterize(),
+                iaa.Invert(),
+                iaa.pillike.Autocontrast(),
+                iaa.pillike.Equalize(),
+                iaa.Affine(rotate=(-45, 45))
+            ], random_order=True
+    )
+    
+    perlin_scale = 3
+    min_perlin_scale = 1
+    perlin_scalex = 2 ** np.random.randint(min_perlin_scale, perlin_scale)
+    perlin_scaley = 2 ** np.random.randint(min_perlin_scale, perlin_scale)
+    perlin_noise = rand_perlin_2d_np([img_dest.shape[0],img_dest.shape[1]], (perlin_scalex, perlin_scaley))  #噪声元素值范围是[-1,1], 噪声形状是self.pic_shape,二维
+    perlin_noise = rot(image = perlin_noise)
+    
+    perlin_noise_bin = np.where(perlin_noise > 0.5, 255, 0)
+    perlin_noise_bin = perlin_noise_bin[:,:,np.newaxis].astype(np.uint8)  #[h, w, 1]
+
+    defect_image = img_dest.copy()
+    img_src = rot(image=img_src)
+    img_src = positive_augmenters(image=img_src)
+    num_labels, labels = cv2.connectedComponents(perlin_noise_bin, connectivity=8)
+    label = 0
+    for idx in range(1, num_labels):
+        mask_roi= np.zeros_like(perlin_noise_bin)
+        k = labels == idx
+        mask_roi[k] = 255         # 单个联通分量
+        cnts = cv2.findContours(mask_roi, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[-2]   # 只有一个轮廓
+        x, y, w, h = cv2.boundingRect(cnts[0])
+        if cv2.contourArea(cnts[0]) > 600:
+             # 使用seamless拼接
+            try:
+                defect_image = cv2.seamlessClone(src=img_src[y:y+h,x:x+w], dst=defect_image, mask=mask_roi[y:y+h,x:x+w], p=(x+w//2,y+h//2), flags=cv2.NORMAL_CLONE)
+                label = 1
+            except:
+                perlin_noise_bin[k] = 0
+        else:
+            perlin_noise_bin[k] = 0
+            
+    perlin_noise_bin = perlin_noise_bin.astype(np.float32)/255
+    return defect_image, perlin_noise_bin, label
 
 
 def patch_ex(ima_dest, ima_src=None, same=False, num_patches=1,

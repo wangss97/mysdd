@@ -14,47 +14,8 @@ from torchvision import transforms as T
 from torch.utils.data import DataLoader
 import cv2
 
-from loader.self_sup_tasks import patch_ex
+from .self_sup_tasks import patch_aug
 
-# note: these are half-widths in [0, 0.5]
-# ((h_min, h_max), (w_min, w_max))
-WIDTH_BOUNDS_PCT = {'bottle':((0.03, 0.4), (0.03, 0.4)), 'cable':((0.05, 0.4), (0.05, 0.4)), 'capsule':((0.03, 0.15), (0.03, 0.4)), 
-                    'hazelnut':((0.03, 0.35), (0.03, 0.35)), 'metal_nut':((0.03, 0.4), (0.03, 0.4)), 'pill':((0.03, 0.2), (0.03, 0.4)), 
-                    'screw':((0.03, 0.12), (0.03, 0.12)), 'toothbrush':((0.03, 0.4), (0.03, 0.2)), 'transistor':((0.03, 0.4), (0.03, 0.4)), 
-                    'zipper':((0.03, 0.4), (0.03, 0.2)), 
-                    'carpet':((0.03, 0.4), (0.03, 0.4)), 'grid':((0.03, 0.4), (0.03, 0.4)), 
-                    'leather':((0.03, 0.4), (0.03, 0.4)), 'tile':((0.03, 0.4), (0.03, 0.4)), 'wood':((0.03, 0.4), (0.03, 0.4))}
-
-MIN_OVERLAP_PCT = {'bottle': 0.25,  'capsule':0.25, 
-                   'hazelnut':0.25, 'metal_nut':0.25, 'pill':0.25, 
-                   'screw':0.25, 'toothbrush':0.25, 
-                   'zipper':0.25}
-
-MIN_OBJECT_PCT = {'bottle': 0.7,  'capsule':0.7, 
-                  'hazelnut':0.7, 'metal_nut':0.5, 'pill':0.7, 
-                  'screw':.5, 'toothbrush':0.25, 
-                  'zipper':0.7}
-
-NUM_PATCHES = {'bottle':3, 'cable':3, 'capsule':3, 'hazelnut':3, 'metal_nut':3, 
-               'pill':3, 'screw':4, 'toothbrush':3, 'transistor':3, 'zipper':4,
-               'carpet':4, 'grid':4, 'leather':4, 'tile':4, 'wood':4}
-
-# k, x0 pairs
-INTENSITY_LOGISTIC_PARAMS = {'bottle':(1/12, 24), 'cable':(1/12, 24), 'capsule':(1/2, 4), 'hazelnut':(1/12, 24), 'metal_nut':(1/3, 7), 
-            'pill':(1/3, 7), 'screw':(1, 3), 'toothbrush':(1/6, 15), 'transistor':(1/6, 15), 'zipper':(1/6, 15),
-            'carpet':(1/3, 7), 'grid':(1/3, 7), 'leather':(1/3, 7), 'tile':(1/3, 7), 'wood':(1/6, 15)}
-
-# bottle is aligned but it's symmetric under rotation
-UNALIGNED_OBJECTS = ['bottle', 'hazelnut', 'metal_nut', 'screw']
-
-# non-aligned objects get extra time
-EPOCHS = {'bottle':320, 'cable':320, 'capsule':320, 'hazelnut':560, 'metal_nut':560, 
-          'pill':320, 'screw':560, 'toothbrush':320, 'transistor':320, 'zipper':320,
-          'carpet':320, 'grid':320, 'leather':320, 'tile':320, 'wood':320}
-
-# brightness, threshold pairs
-BACKGROUND = {'bottle':(200, 60), 'screw':(200, 60), 'capsule':(200, 60), 'zipper':(200, 60), 
-              'hazelnut':(20, 20), 'pill':(20, 20), 'toothbrush':(20, 20), 'metal_nut':(20, 20)}
 
 
 CLASS_NAMES = ['bottle', 'cable', 'capsule', 'carpet', 'grid',
@@ -65,9 +26,9 @@ OBJECTS = ['bottle', 'cable', 'capsule', 'hazelnut', 'metal_nut',
 TEXTURES = ['carpet', 'grid', 'leather', 'tile', 'wood']
 
 
-class MVTecTestDataset_NSA(Dataset):
+class  MVTecTestDataset_ours(Dataset):
     def __init__(self, pic_size=256, category='bottle') -> None:
-        super(MVTecTestDataset_NSA, self).__init__()
+        super(MVTecTestDataset_ours, self).__init__()
         self.pic_shape = (pic_size, pic_size)
         self.category = category
         self.data_dir = '/root/test/wss/datasets/mvtec_anomaly_detection'
@@ -80,22 +41,6 @@ class MVTecTestDataset_NSA(Dataset):
             print(f"{defect_type[i]}:{count_perType[i]} ", end='')
         print()
 
-        if category in UNALIGNED_OBJECTS:
-            self.crop_transform = T.Compose([
-                    T.RandomRotation(5),
-                    T.CenterCrop(230), 
-                    T.RandomCrop(224),
-                    T.Resize(pic_size)])
-        elif category in OBJECTS:
-            # no rotation for aligned objects
-            self.crop_transform = T.Compose([
-                    T.CenterCrop(230),
-                    T.RandomCrop(224),
-                    T.Resize(pic_size)])
-        else:  # texture
-            self.crop_transform = T.Compose([
-                    T.RandomVerticalFlip(), 
-                    T.RandomCrop(256)])
 
         self.resize_transform = T.Resize(pic_size)
 
@@ -134,12 +79,11 @@ class MVTecTestDataset_NSA(Dataset):
         return data_list, mask_list
     
     def __getitem__(self, idx):
-        ''' 测试时,返回样本， 像素标签， 图片标签， 图片路径， 像素标签路径 '''
+        ''' 测试时,返回样本， 像素标签， 图片标签， 图片路径 '''
         image_path = self.data_list[idx]
         mask_path = self.mask_list[idx]
 
         image = self.resize_transform(Image.open(image_path).convert('RGB'))
-        image = self.crop_transform(image)
         image = np.asarray(image)[...,::-1].copy()  #BGR
         image = self.norm_transform(image)
 
@@ -150,7 +94,6 @@ class MVTecTestDataset_NSA(Dataset):
         else:
             # 转换为二值图像
             mask = self.resize_transform(Image.open(mask_path).convert('1'))
-            mask = self.crop_transform(mask)
             mask = np.asarray(mask)
             mask = np.where(mask < 0.5, 0., 1.)
             mask = torch.tensor(mask[np.newaxis, ...])
@@ -158,45 +101,18 @@ class MVTecTestDataset_NSA(Dataset):
         return image, mask, label, image_path
 
 
-class MVTecTrainDataset_NSA(Dataset):
-    def __init__(self, pic_size=256, category='bottle', positive_aug_ratio=5,negative_aug_ratio=5, self_sup_args={}):
-        super(MVTecTrainDataset_NSA, self).__init__()
+class MVTecTrainDataset_ours(Dataset):
+    def __init__(self, pic_size=256, category='bottle', positive_aug_ratio=2,negative_aug_ratio=2):
+        super(MVTecTrainDataset_ours, self).__init__()
         assert category in CLASS_NAMES, 'class_name: {}, should be in {}'.format(category, CLASS_NAMES)
         self.data_dir = '/root/test/wss/datasets/mvtec_anomaly_detection'
         self.class_name = category
         self.positive_aug_ratio = positive_aug_ratio
         self.negative_aug_ratio = negative_aug_ratio
         self.low_res = pic_size
-        self.self_sup_args = self_sup_args
 
-        self.self_sup_args.update({'gamma_params':(2, 0.05, 0.03), 'resize':True, 
-                        #    'shift':True, 'same':False, 'mode':cv2.NORMAL_CLONE, 'label_mode':'logistic-intensity'})
-                           'shift':True, 'same':False, 'mode':cv2.NORMAL_CLONE, 'label_mode':'binary'})
-        if self.class_name in TEXTURES:
-            self.self_sup_args.update({'resize_bounds': (.5, 2)})
-        self.self_sup_args.update({'width_bounds_pct': WIDTH_BOUNDS_PCT.get(self.class_name),
-                                                    'intensity_logistic_params': INTENSITY_LOGISTIC_PARAMS.get(self.class_name),
-                                                    'num_patches': NUM_PATCHES.get(self.class_name),
-                                                    'min_object_pct': MIN_OBJECT_PCT.get(self.class_name),
-                                                    'min_overlap_pct': MIN_OVERLAP_PCT.get(self.class_name)})
         # set transforms
         # load data
-        if self.class_name in UNALIGNED_OBJECTS:
-            self.crop_transform = T.Compose([
-                    T.RandomRotation(5),
-                    T.CenterCrop(230),
-                    T.RandomCrop(224),
-                    T.Resize(self.low_res)])
-        elif self.class_name in OBJECTS:
-            # no rotation for aligned objects
-            self.crop_transform = T.Compose([
-                    T.CenterCrop(230),
-                    T.RandomCrop(224),
-                    T.Resize(self.low_res)])
-        else:  # texture
-            self.crop_transform = T.Compose([
-                    T.RandomVerticalFlip(), 
-                    T.RandomCrop(256)])
 
         self.resize_transform = T.Resize(self.low_res)
 
@@ -237,7 +153,7 @@ class MVTecTrainDataset_NSA(Dataset):
 
         xs = []
         for path in x_paths:
-            xs.append(self.resize_transform(Image.open(path).convert('RGB'))) 
+            xs.append(self.resize_transform(Image.open(path).convert('RGB')))
 
         return list(xs), x_paths
 
@@ -253,13 +169,13 @@ class MVTecTrainDataset_NSA(Dataset):
     def get_augmented_positive(self, image, defect_source):
         image = np.asarray(image)
         defect_source = np.asarray(defect_source)
-
-        image_defect, mask = patch_ex(image, defect_source, **self.self_sup_args)
-
         image = image[...,::-1].copy()  #BGR
-        image_defect = image_defect[...,::-1].copy()  #BGR
-        mask = torch.tensor(mask[None, ..., 0]).float()
-        label = 1
+        defect_source = defect_source[...,::-1].copy()  #BGR
+        
+        image_defect, mask, label = patch_aug(image, defect_source)
+
+
+        mask = torch.tensor(mask).float().permute(2,0,1)
         
         return self.norm_transform(image), self.norm_transform(image_defect), mask, label
 
@@ -286,22 +202,27 @@ class MVTecTrainDataset_NSA(Dataset):
 
 
 if __name__ == '__main__':
+    from utils import imshow
 
+    def TensortoImg(norm_img:torch.Tensor):
+        # height, width, channel   BGR
+        norm_img = norm_img.permute(1,2,0)
+        mean=[0.406, 0.456, 0.485]
+        std=[0.225, 0.224, 0.229]
+        for i in range(3):
+            norm_img[:,:,i] = (norm_img[:,:,i]*std[i]+mean[i]) * 255
+        norm_img = norm_img.numpy().astype(np.uint8)
+        return norm_img
+    
     class_name = 'cable'
 
+    test_data = MVTecTrainDataset_NSA(category='cable', negative_aug_ratio=0, positive_aug_ratio=1)
+    image, image_defect, mask, label, imgPath = test_data.__getitem__(0)
+    image_defect = TensortoImg(image_defect)
+    mask = mask.permute(1,2,0).numpy()*255
+    mask = mask.astype(np.uint8)
+    
+    # imshow([image_defect, mask])
     
 
 
-    train_dat = MVTecTrainDataset_NSA(root_path='/root/test/wss/datasets/', class_name=class_name)
-
-    
-    
-    for i in range(100):
-        data = train_dat.__getitem__(i)
-
-    quit()
-    loader_train = DataLoader(train_dat, 1, shuffle=True, num_workers=os.cpu_count(),
-                              worker_init_fn=lambda _: np.random.seed(torch.utils.data.get_worker_info().seed % 2**32))
-
-    for item in loader_train:
-        pass

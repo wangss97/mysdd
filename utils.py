@@ -9,6 +9,9 @@ import cv2
 import torch
 from skimage.measure import label, regionprops
 from sklearn.metrics import auc
+from sklearn.metrics import recall_score
+from sklearn.metrics import precision_score, f1_score
+
 
 ckpInfo = {
     'bottle':{
@@ -312,6 +315,26 @@ def AUPRO(gt_mask, super_mask):
     except:
         seg_pro_auc = 0
     return seg_pro_auc
+
+def rec99(y_test, score):
+    y_test = np.array(y_test)
+    score = np.array(score)
+    score_defect = score[y_test == 1]
+    n_anom = len(score_defect)
+    idxs = np.argsort(score_defect)
+    idx90 = idxs[math.floor(n_anom*0.1 + 1)]
+    idx95 = idxs[math.floor(n_anom*0.05 + 1)]
+    idx99 = idxs[math.floor(n_anom*0.01 + 1)]
+    thres = [score_defect[idx90],score_defect[idx95],score_defect[idx99]]
+    res = ''
+    for th in thres:
+        predict = np.zeros(len(y_test),dtype=np.int)
+        predict[score >= th] = 1
+        rec = recall_score(y_test,predict,labels = 1)
+        precision = precision_score(y_test,predict,labels=1)
+        f1 = f1_score(y_test,predict,labels=1)
+        res += f'rec = {round(rec,4)} th= {round(th,4)}  pre: {round(precision,4)} f1: {round(f1,4)}\n'
+    return res
 
 if __name__ == '__main__':
     patch_split(None,None,2)

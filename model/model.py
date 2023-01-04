@@ -13,6 +13,7 @@ from model.memory import BlockMemory, MemoryUnit, MemoryUnit_prototype
 from model.segnet import DiscriminativeSubNetwork, PatchSegNet, SegDecoder
 from model.decoder import Decoder, Encoder
 from model.loss import ssim
+from model.segnet_ours import Segnet_ours
 from utils import patch_split, visualize
 import numpy as np
 
@@ -42,9 +43,10 @@ class model(torch.nn.Module):
 
         self.decoder = Decoder(in_channel=decoder_input_channel, block_list_size=len(mem_block_list), out_channel=out_channel, base_width=128, depth=rec_depth)  # 不拼接原始bottleneck
 
-        self.segnet = DiscriminativeSubNetwork(in_channels=2*in_channel, out_channels=2, depth = seg_depth)
+        # self.segnet = DiscriminativeSubNetwork(in_channels=2*in_channel, out_channels=2, depth = seg_depth)
 
         # self.segnet = DeepLab(backbone='xception', output_stride=8, num_classes=2, sync_bn=False, freeze_bn=False)
+        self.segnet = Segnet_ours(in_channels=in_channel, out_channels=2, depth=seg_depth)
 
         self.detach = False
 
@@ -62,12 +64,16 @@ class model(torch.nn.Module):
         
         output = self.decoder(x5_hat)
         
-        if self.detach:
-            output_detach = output.detach()
-        else:
-            output_detach = output
+        # if self.detach:
+        #     output_detach = output.detach()
+        # else:
+        #     output_detach = output
+        output_detach = output
         ''' 使用segNet '''
-        mask = self.segnet(torch.concat([output_detach, ori_img], dim=1))
+        # mask = self.segnet(torch.concat([output_detach, ori_img], dim=1))
+        mask = self.segnet(output_detach, ori_img)
+
+        # mask = torch.zeros((input.shape[0],2,256,256))
 
         return output, mask, compact_loss, distance_loss
 

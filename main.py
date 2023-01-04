@@ -1,3 +1,4 @@
+from asyncio.log import logger
 import torch
 import math
 import cv2
@@ -6,8 +7,10 @@ import numpy as np
 import argparse
 from loader.mvtec_dataset_NSA import MVTecTrainDataset_NSA, MVTecTestDataset_NSA, OBJECTS, TEXTURES
 from loader.mvtec_dataset_GOAD import MVTecTrainDataset_GOAD
+from loader.mvttec_dataset_ours import MVTecTrainDataset_ours, MVTecTestDataset_ours
 from loader.MNIST_dataset import MNISTTestDataset, MNISTTrainDataset
 from loader.DAGM_dataset import DAGMTrainDataset, DAGMTestDataset
+from loader.EL_dataset import ELTrainDataset, ELTestDataset
 from model.resnet import wide_resnet50_2
 
 import utils
@@ -18,6 +21,8 @@ from model.discriminator import discriminator
 from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, roc_curve, confusion_matrix
 from skimage.metrics import structural_similarity as compare_ssim
+
+from scipy import interpolate
 
 from tqdm import tqdm
 
@@ -101,9 +106,6 @@ class Agent():
     def train(self):
         print('start trainning..')
         self.logger.info('start trainning..')
-        # optimizer = torch.optim.Adam([
-        #                               {"params": self.model.parameters(), "lr": self.config['lr']},
-        #                               {"params": self.segnet.parameters(), "lr": self.config['lr']}], weight_decay=1e-5)
         optimizer = torch.optim.Adam(self.model.parameters(),lr=self.config['lr'], weight_decay=1e-5)
         warmup = 20
         def adjust_lr(epoch):
@@ -124,7 +126,15 @@ class Agent():
         for epoch in range(0, self.STEP + 1):
             scheduler.step()
         
-        dataset = MVTecTrainDataset_Draem(pic_size=self.config['pic_size'],
+        # dataset = MVTecTrainDataset_Draem(pic_size=self.config['pic_size'],
+        #                 category=self.config['category'],
+        #                 positive_aug_ratio = self.config['positive_aug_ratio'],
+        #                 negative_aug_ratio = self.config['negative_aug_ratio'])
+        # dataset = MVTecTrainDataset_ours(pic_size=self.config['pic_size'],
+        #                 category=self.config['category'],
+        #                 positive_aug_ratio = self.config['positive_aug_ratio'],
+        #                 negative_aug_ratio = self.config['negative_aug_ratio'])
+        dataset = MVTecTrainDataset_NSA(pic_size=self.config['pic_size'],
                         category=self.config['category'],
                         positive_aug_ratio = self.config['positive_aug_ratio'],
                         negative_aug_ratio = self.config['negative_aug_ratio'])
@@ -132,6 +142,8 @@ class Agent():
         #                 category=self.config['category'],
         #                 positive_aug_ratio = self.config['positive_aug_ratio'],
         #                 negative_aug_ratio = self.config['negative_aug_ratio'])
+
+
         loss_l2 = torch.nn.MSELoss()
         loss_focal = FocalLoss()
         best_detect_auc, best_seg_auc, best_seg_pro = 0,0,0
@@ -141,13 +153,10 @@ class Agent():
         else:
             self.model.detach_off()
         for epoch in range(self.STEP + 1, self.STEP + self.EPOCHS + 1):
-            # if epoch % 20 == 10:
-            #     self.model.detach_off()
-            # elif epoch % 20 == 0:
-            #     self.model.detach_on()
-            
-            # if epoch == 350:
-            #     self.model.detach_off()
+            # dataset = ELTrainDataset(pic_size=self.config['pic_size'],
+            #     category=self.config['category'],
+            #     positive_aug_ratio = self.config['positive_aug_ratio'],
+            #     negative_aug_ratio = self.config['negative_aug_ratio'])
 
             self.model.train()
 
@@ -172,8 +181,8 @@ class Agent():
                 # label_pred_batch = self.discriminator(torch.concat([image_hat_batch,defect_image_batch,mask_pred_batch[-1]],dim=1))
                 # label_pred_batch = self.discriminator(image_hat_batch)
                 
-                real = torch.ones(batchsize).to(device=self.device)
                 ''' adversarial loss '''
+                # real = torch.ones(batchsize).to(device=self.device)
                 # loss_adv_value = loss_adv(label_pred_batch, real)
 
                 ''' 重构损失 '''
@@ -191,6 +200,8 @@ class Agent():
                 # loss = loss_l2_value + compact_loss_value + 0.0001 * distance_loss_value  + loss_focal_value + loss_adv_value
                 loss = loss_l2_value + compact_loss_value + 0.0001 * distance_loss_value  + loss_focal_value
                 # loss = loss_l2_value + loss_focal_value
+                # loss = loss_l2_value + compact_loss_value + 0.0001 * distance_loss_value
+                # loss = loss_l2_value
 
                 loss_epoch += loss.item()
                 rec_loss_epoch += loss_l2_value.item()
@@ -233,6 +244,7 @@ class Agent():
 
             print(f"category:{self.config['category']} epoch:[{epoch}], loss: {loss_epoch}")
 
+            detect_auc, seg_auc, seg_pro = 0, 0, 0
             if epoch % self.config['validation_period'] == 0:
                 # torch.save(self.memory, f"{self.CPT_DIR}/mem_epoch_{epoch}.pt")
                 detect_auc, seg_auc, seg_pro = self.test(save_step = epoch)
@@ -254,6 +266,7 @@ class Agent():
             self.remove_model(f"epoch_{epoch-1}")
             self.save_model(f"epoch_{epoch}")
             print('')
+        self.logger.info(f"best_detect_auc:{best_detect_auc}  best_seg_auc:{best_seg_auc}  best_seg_pro:{best_seg_pro}")
 
 
     def test(self, save_step = None, visual=True):
@@ -266,12 +279,19 @@ class Agent():
 
         # self.discriminator.eval()
         with torch.no_grad():
-            dataset = MVTecTestDataset_Draem(self.config['pic_size'], self.config['category'])
+            dataset = MVTecTestDataset_ours(self.config['pic_size'], self.config['category'])
             # dataset = DAGMTestDataset(self.config['pic_size'], self.config['category'])
+            # dataset = ELTestDataset(self.config['pic_size'], self.config['category'])
+
             dataloader = DataLoader(dataset, batch_size=self.config['batchsize'], shuffle=True)
             groundTruth_list = []
             score_map_list = []
             mask_list = []
+
+            score_map_ssim = []
+            score_ssim = []
+            score_map_mse = []
+            score_mse = []
 
             for image_batch, mask_batch, label_batch, image_path_batch in tqdm(dataloader):
                 image_batch = image_batch.to(self.device)
@@ -288,16 +308,15 @@ class Agent():
                 label_batch = label_batch.detach().cpu().tolist()
                 groundTruth_list += label_batch if isinstance(label_batch,list) else [label_batch]
 
-                ''' psnr当作异常分数 '''
-                # mse_batch = torch.mean(torch.square(image_hat_batch-image_batch), dim=(1,2,3)).detach().cpu().tolist()
-                # score_list_batch = np.array(list(map(utils.psnr, mse_batch)))
-                # score_psnr_list += score_list_batch.tolist()
-
                 ''' ssim当作异常分数 '''
-                # ssim_batch, ssim_map_batch = ssim(image_batch.detach().cpu(), image_hat_batch.detach().cpu(),window_size=31, size_average=False)
-                # ssim_map_batch = (1 - ssim_map_batch.mean(1).numpy())/2
-                # score_list_batch = ssim_batch.numpy()
-                # score_ssim_list += score_list_batch.tolist()
+                ssim_batch, ssim_map_batch = ssim(image_batch.detach().cpu(), image_hat_batch.detach().cpu(),window_size=31, size_average=False)
+                ssim_map_batch = (1 - ssim_map_batch.mean(1).numpy())/2
+                score_map_ssim.append(ssim_map_batch)
+                score_ssim += ssim_batch.tolist()
+                ''' mse当作异常分数 '''
+                mse_map_batch = torch.square(image_batch - image_hat_batch).mean(1).detach().cpu().numpy()
+                score_map_mse.append(mse_map_batch)
+                score_mse += np.mean(mse_map_batch, axis=(1,2)).tolist()
 
                 score_map_list.append(mask_pred_batch)
                 mask_list.append(mask_batch)
@@ -326,12 +345,12 @@ class Agent():
             score_average = F.avg_pool2d(score_average, 21, stride=1, padding=21//2)
             score_average = score_average.reshape(score_maps.shape[0], -1)
 
-            for num in range(1,10):
-                topk_value, _ = torch.topk(score_average, num, dim=1)
-                scores = np.mean(topk_value.detach().cpu().numpy(), axis=1).tolist()
+            # for num in range(1,10):
+            #     topk_value, _ = torch.topk(score_average, num, dim=1)
+            #     scores = np.mean(topk_value.detach().cpu().numpy(), axis=1).tolist()
 
-                detect_auc = roc_auc_score(groundTruth_list, scores, labels = 1)
-                print(f"top {num}:{detect_auc:.4f}")
+            #     detect_auc = roc_auc_score(groundTruth_list, scores, labels = 1)
+            #     print(f"top {num}:{detect_auc:.4f}")
 
             topk_value, _ = torch.topk(score_average, 5, dim=1)
             scores = np.mean(topk_value.detach().cpu().numpy(), axis=1).tolist()
@@ -343,8 +362,10 @@ class Agent():
             score_maps = score_maps.detach().squeeze(1).detach().cpu().numpy()
             segment_auc = roc_auc_score(masks.flatten(), score_maps.flatten())
             score_maps = np.around(score_maps, decimals=3)
-            segment_pro = utils.AUPRO(masks, score_maps)
-            # segment_pro = 0.
+            # segment_pro = utils.AUPRO(masks, score_maps)
+            # detect_auc = 0.
+            # segment_auc = 0.
+            segment_pro = 0.
 
             self.logger.info('##########  Test Metric: ')
             self.logger.info(f"detect_auc:{detect_auc:.4f}")
@@ -357,21 +378,76 @@ class Agent():
             print(f"segment_auc:{segment_auc:.4f}")
             print(f"segment_aupro:{segment_pro:.4f}")
 
-            fpr, tpr, thres = roc_curve(groundTruth_list, scores, pos_label=1)
-            diff = tpr-fpr
-            idxs = np.argsort(diff)
+            ''' 计算tpr,tnr '''
+            # fpr, tpr, thres = roc_curve(groundTruth_list, scores, pos_label=1)
+            # diff = tpr-fpr
+            # idxs = np.argsort(diff)
 
-            best_thres = thres[idxs[-1]]
-            pred = np.where(scores > best_thres, 1, 0).tolist()
-            matrix = confusion_matrix(groundTruth_list, pred)
-            TN, FP, FN, TP = matrix[0][0],matrix[0][1],matrix[1][0],matrix[1][1]
-            print(matrix)
-            TPR = TP*1.0/(TP+FN)
-            TNR = TN*1.0/(TN+FP)
-            print(f'TPR:{TPR}  TNR:{TNR}')
-            self.logger.info(f'TPR:{TPR}  TNR:{TNR}')
+            # best_thres = thres[idxs[-1]]-0.00001
+            # pred = np.where(scores > best_thres, 1, 0).tolist()
+            # matrix = confusion_matrix(groundTruth_list, pred)
+            # TN, FP, FN, TP = matrix[0][0],matrix[0][1],matrix[1][0],matrix[1][1]
+            # print(matrix)
+            # TPR = TP*1.0/(TP+FN)
+            # TNR = TN*1.0/(TN+FP)
+            # print(f'TPR:{TPR}  TNR:{TNR}')
+            # self.logger.info(f'TPR:{TPR}  TNR:{TNR}')
+
+            ''' 计算TPR为95%时的FPR '''
+            fpr,tpr,thresh = roc_curve(groundTruth_list, scores, pos_label=1)
+            fpr95 = float(interpolate.interp1d(tpr, fpr)(0.95))
+            print(f'TPR:0.95  FPR:{fpr95}')
+            self.logger.info(f'TPR:0.95  FPR:{fpr95}')
+
+            ''' 计算recall99时的pre '''
+            res = utils.rec99(groundTruth_list, scores)
+            print(res)
+            self.logger.info(res)
+
+            # ''' mse的AUC, seg AUC, PRO'''
+            # score_mse = np.array(score_mse)
+            # auc_mse = roc_auc_score(groundTruth_list, score_mse)
+            # score_map_mse = np.concatenate(score_map_mse, axis=0)
+            # seg_auc_mse = roc_auc_score(masks.flatten(), score_map_mse.flatten())
+            # score_map_mse = np.around(score_map_mse, decimals=3)
+            # seg_pro_mse = utils.AUPRO(masks, score_map_mse)
+            # self.logger.info('##########  MSE: ')            
+            # self.logger.info(f"detect_auc_mse:{auc_mse:.4f}")
+            # self.logger.info(f"segment_auc_mse:{seg_auc_mse:.4f}")
+            # self.logger.info(f"segment_aupro_mse:{seg_pro_mse:.4f}")
+            # self.logger.info('')
+            # print('')
+            # print('##########  MSE: ')
+            # print(f"detect_auc_mse:{auc_mse:.4f}")
+            # print(f"segment_auc_mse:{seg_auc_mse:.4f}")
+            # print(f"segment_aupro_mse:{seg_pro_mse:.4f}")
+
+            # fpr,tpr,thresh = roc_curve(groundTruth_list, score_mse, pos_label=1)
+            # fpr95 = float(interpolate.interp1d(tpr, fpr)(0.95))
+            # print(f'TPR:0.95  FPR:{fpr95}')
+            # self.logger.info(f'TPR:0.95  FPR:{fpr95}')
+
+            # ''' ssim的AUC, seg AUC, PRO'''
+            # score_ssim = np.array(score_ssim)
+            # auc = roc_auc_score(groundTruth_list, score_ssim)
+            # score_map_ssim = np.concatenate(score_map_ssim, axis=0)
+            # seg_auc = roc_auc_score(masks.flatten(), score_map_ssim.flatten())
+            # score_map_ssim = np.around(score_map_ssim, decimals=3)
+            # seg_pro = utils.AUPRO(masks, score_map_ssim)
+            # self.logger.info('##########  SSIM: ')            
+            # self.logger.info(f"detect_auc_ssim:{auc:.4f}")
+            # self.logger.info(f"segment_auc_ssim:{seg_auc:.4f}")
+            # self.logger.info(f"segment_aupro_ssim:{seg_pro:.4f}")
+            # self.logger.info('')
+            # print('')
+            # print('##########  SSIM: ')
+            # print(f"detect_auc_ssim:{auc:.4f}")
+            # print(f"segment_auc_ssim:{seg_auc:.4f}")
+            # print(f"segment_aupro_ssim:{seg_pro:.4f}")
+
 
             return detect_auc, segment_auc, segment_pro
+            # return auc_mse, seg_auc_mse, seg_pro_mse
 
     def train_discriminator(self, epoch=20, test_period=2):
         print(f'train discriminator, epoch:{epoch}')
@@ -726,7 +802,7 @@ class Agent():
         self.model.eval()
 
         with torch.no_grad():
-            dataset = MVTecTestDataset_Draem(self.config['pic_size'], self.config['category'])
+            dataset = MVTecTestDataset_Draem(self.config['pic_size'], self.config['category'], sigma=self.config['sigma'])
             dataloader = DataLoader(dataset, batch_size=self.config['batchsize'], shuffle=True)
             groundTruth_list = []
             score_mask_list = []
@@ -757,12 +833,6 @@ class Agent():
                 # mse_batch = torch.mean(torch.square(image_hat_batch-image_batch), dim=(1,2,3)).detach().cpu().tolist()
                 # score_list_batch = np.array(list(map(utils.psnr, mse_batch)))
                 # score_psnr_list += score_list_batch.tolist()
-
-                ''' ssim当作异常分数 '''
-                # ssim_batch, ssim_map_batch = ssim(image_batch.detach().cpu(), image_hat_batch.detach().cpu(),window_size=31, size_average=False)
-                # ssim_map_batch = (1 - ssim_map_batch.mean(1).numpy())/2
-                # score_list_batch = ssim_batch.numpy()
-                # score_ssim_list += score_list_batch.tolist()
 
                 score_mask_list.append(mask_pred_batch)
 
@@ -798,58 +868,58 @@ class Agent():
                         utils.visualize([image_batch[i], image_hat_batch[i], mask_batch[i], mask_pred_batch[i]],
                         save_dir = f"./vis/{self.config['tag']}/{self.config['category']}/test/epoch_{save_step}", img_name = image_name_batch[i]) 
             
-            ''' 计算SSIM和MSE  '''
+            # ''' 计算SSIM和MSE  '''
             score_mask_list = torch.concat(score_mask_list, dim=0)
             mask_list = torch.concat(mask_list, dim=0)
+            mask_list = mask_list.squeeze(1).detach().cpu().numpy()
             image_list = torch.concat(image_list, dim=0)
             image_hat_list = torch.concat(image_hat_list, dim=0)
-            ssim_score, ssim_pixel_score = ssim(image_list.detach().cpu(), image_hat_list.detach().cpu(),window_size=31, size_average=False)
-            ssim_pixel_score = (1 - ssim_pixel_score.mean(1).numpy())/2
-            ssim_score = (1 - ssim_score.numpy()) / 2
-
-            mse_pixel_score = np.mean((image_list.detach().cpu().numpy() - image_hat_list.detach().cpu().numpy())**2, axis=1)
-            mse_score = np.mean(mse_pixel_score, axis=(1,2))
-
-            detect_auc = roc_auc_score(groundTruth_list, ssim_score, labels = 1)
-            self.logger.info('##########  Test Metric: ')
-            self.logger.info(f'det auc:{detect_auc:.4f}')
-            print(f'det auc:{detect_auc:.4f}')
             
-            mask_list = mask_list.squeeze(1).detach().cpu().numpy()
-            segment_auc = roc_auc_score(mask_list.flatten(), ssim_pixel_score.flatten())
-            self.logger.info(f'seg auc:{segment_auc:.4f}')
-            print(f"seg auc:{segment_auc:.4f}")
+            # ssim_score, ssim_pixel_score = ssim(image_list.detach().cpu(), image_hat_list.detach().cpu(),window_size=31, size_average=False)
+            # ssim_pixel_score = (1 - ssim_pixel_score.mean(1).numpy())/2
+            # ssim_score = (1 - ssim_score.numpy()) / 2
 
-            ssim_pixel_score = np.around(ssim_pixel_score, decimals=3)
-            segment_pro = utils.AUPRO(mask_list, ssim_pixel_score)
-            self.logger.info(f"segment_aupro:{segment_pro:.4f}")
-            self.logger.info('')
-            print(f"segment_aupro:{segment_pro:.4f}")
-            print('')
+            # mse_pixel_score = np.mean((image_list.detach().cpu().numpy() - image_hat_list.detach().cpu().numpy())**2, axis=1)
+            # mse_score = np.mean(mse_pixel_score, axis=(1,2))
 
-            mse_detect_auc = roc_auc_score(groundTruth_list, mse_score, labels = 1)
-            self.logger.info(f'mse det auc:{mse_detect_auc:.4f}')
-            print(f'mse det auc:{mse_detect_auc:.4f}')
+            # detect_auc = roc_auc_score(groundTruth_list, ssim_score, labels = 1)
+            # self.logger.info('##########  Test Metric: ')
+            # self.logger.info(f'ssim det auc:{detect_auc:.4f}')
+            # print(f'ssim det auc:{detect_auc:.4f}')
             
-            mse_segment_auc = roc_auc_score(mask_list.flatten(), mse_pixel_score.flatten())
-            self.logger.info(f'mse seg auc:{mse_segment_auc:.4f}')
-            print(f"mse seg auc:{mse_segment_auc:.4f}")
+            # segment_auc = roc_auc_score(mask_list.flatten(), ssim_pixel_score.flatten())
+            # self.logger.info(f'ssim seg auc:{segment_auc:.4f}')
+            # print(f"ssim seg auc:{segment_auc:.4f}")
 
-            mse_pixel_score = np.around(mse_pixel_score, decimals=3)
-            mse_segment_pro = utils.AUPRO(mask_list, mse_pixel_score)
-            self.logger.info(f"mse segment_aupro:{mse_segment_pro:.4f}")
-            self.logger.info('')
-            print(f"mse segment_aupro:{mse_segment_pro:.4f}")
-            print('')
-            return detect_auc, segment_auc, segment_pro 
+            # ssim_pixel_score = np.around(ssim_pixel_score, decimals=3)
+            # segment_pro = utils.AUPRO(mask_list, ssim_pixel_score)
+            # self.logger.info(f"ssim seg pro:{segment_pro:.4f}")
+            # self.logger.info('')
+            # print(f"ssim seg pro:{segment_pro:.4f}")
+            # print('')
+
+            # mse_detect_auc = roc_auc_score(groundTruth_list, mse_score, labels = 1)
+            # self.logger.info(f'mse det auc:{mse_detect_auc:.4f}')
+            # print(f'mse det auc:{mse_detect_auc:.4f}')
+            
+            # mse_segment_auc = roc_auc_score(mask_list.flatten(), mse_pixel_score.flatten())
+            # self.logger.info(f'mse seg auc:{mse_segment_auc:.4f}')
+            # print(f"mse seg auc:{mse_segment_auc:.4f}")
+
+            # mse_pixel_score = np.around(mse_pixel_score, decimals=3)
+            # mse_segment_pro = utils.AUPRO(mask_list, mse_pixel_score)
+            # self.logger.info(f"mse segment_aupro:{mse_segment_pro:.4f}")
+            # self.logger.info('')
+            # print(f"mse segment_aupro:{mse_segment_pro:.4f}")
+            # print('')
+            # return detect_auc, segment_auc, segment_pro 
 
 
-            score_mask_list = torch.concat(score_mask_list, dim=0)
             score_average = F.avg_pool2d(score_mask_list, 21, stride=1, padding=21//2)
             score_average = score_average.reshape(score_average.shape[0], -1)
 
             self.logger.info('##########  Test Metric: ')
-            self.logger.info('detect auc:')
+            # self.logger.info('detect auc:')
             # for num in [1,3,5,10,30,50]:
             best_auc = 0
             best_k = 5
@@ -867,14 +937,20 @@ class Agent():
             topk_value, _ = torch.topk(score_average, best_k, dim=1)
             score_list = np.mean(topk_value.detach().cpu().numpy(), axis=1).tolist()            
             detect_auc_mask = roc_auc_score(groundTruth_list, score_list, labels = 1)
-            # print(f"detect_auc_mask: {detect_auc_mask:.4f}")
+            self.logger.info(f"detect auc:{detect_auc_mask:.4f}")
+            print(f"detect auc:{detect_auc_mask:.4f}")
+            ''' 计算TPR为95%时的FPR '''
+            fpr,tpr,thresh = roc_curve(groundTruth_list, score_list, pos_label=1)
+            fpr95 = float(interpolate.interp1d(tpr, fpr)(0.950))
+            print(f'TPR:0.95  FPR:{fpr95}')
+            self.logger.info(f'TPR:0.95  FPR:{fpr95}')
+
             # np.save(f'./tmp/{self.config["category"]}_groundtruth_{save_step}.npy',np.array(groundTruth_list))
             # np.save(f'./tmp/{self.config["category"]}_score_{save_step}.npy',np.array(score_list))
             # np.save(f'./tmp/{self.config["category"]}_name_{save_step}.npy',np.array(image_name_list))
 
-            pixel_score = score_mask_list.squeeze(1).detach().cpu().numpy()   
+            pixel_score = score_mask_list.squeeze(1).detach().cpu().numpy()
 
-            mask_list = np.array(mask_list)
             segment_auc_mask = roc_auc_score(mask_list.flatten(), pixel_score.flatten())
             self.logger.info(f'seg auc:{segment_auc_mask:.4f}')
             print(f"seg auc:{segment_auc_mask:.4f}")
@@ -883,10 +959,11 @@ class Agent():
             pixel_score = np.around(pixel_score, decimals=3)
             segment_pro = utils.AUPRO(mask_list, pixel_score)
             # segment_pro = 0.
-            self.logger.info(f"segment_aupro:{segment_pro:.4f}")
+            self.logger.info(f"seg pro:{segment_pro:.4f}")
             self.logger.info('')
             print('')
-            print(f"segment_aupro:{segment_pro:.4f}")
+            print(f"seg pro:{segment_pro:.4f}")
+
             return detect_auc_mask, segment_auc_mask, segment_pro 
 
     def test_best_metric(self):
@@ -897,6 +974,7 @@ class Agent():
         for cpt in cpts:
             cpt_path = os.path.join(cpt_dir, cpt)
             self.logger.info("")
+            self.logger.info(f"gaussian blur, kernal (25,25), sigma:{self.config['sigma']}")
             self.logger.info(f'cpt path:{cpt_path}')
             print(f'cpt path:{cpt_path}')
             print(f'model load weight from : {cpt_path}')
@@ -923,17 +1001,18 @@ if __name__ == "__main__":
         parser.add_argument("--tag",type=str,default= 'default')
         parser.add_argument("--step",type=int,default = -1)
         parser.add_argument("--epochs",type=int,default = 2)
-        parser.add_argument("--validation_period",type=int,default = 5)
+        parser.add_argument("--validation_period",type=int,default = 50)
         parser.add_argument("--batchsize",type=int,default = 8)
         parser.add_argument("--lr",type=float,default = 1e-3)
-        parser.add_argument("--GPU_ID",type=int, default=3)
+        parser.add_argument("--GPU_ID",type=int, default=0)
         parser.add_argument("--pic_size",type=int, default=256)
-        parser.add_argument("--msize",type=int, default=20)
+        parser.add_argument("--msize",type=int, default=50)
         parser.add_argument("--mdim",type=int, default=2048)
         parser.add_argument("--mblock_size",type=str, default='1,2,4,8')
-        parser.add_argument("--positive_aug_ratio",type=int, default=5)
-        parser.add_argument("--negative_aug_ratio",type=int, default=5)
+        parser.add_argument("--positive_aug_ratio",type=int, default=2)
+        parser.add_argument("--negative_aug_ratio",type=int, default=2)
         parser.add_argument("--cpt_path", type=str, default="")
+        parser.add_argument("--sigma", type=int, default=1)
 
         return parser.parse_args()
     
@@ -955,6 +1034,9 @@ if __name__ == "__main__":
     # steps = [375, 200, 665, 200, 125, 685, 215, 480, 490, 340, 630, 340, 130, 500, 590]
 
 # ['carpet', 'grid', 'leather', 'tile', 'wood']
+# 'carpet,grid,leather,tile,wood'
+# ['bottle', 'cable', 'capsule', 'hazelnut', 'metal_nut', 'pill', 'screw', 'toothbrush', 'transistor', 'zipper']
+# 'bottle,cable,capsule,hazelnut,metal_nut,pill,screw,toothbrush,transistor,zipper'
 
     for category in categorys:
         config['category'] = category
@@ -969,8 +1051,8 @@ if __name__ == "__main__":
             agent.train()
         elif config['test']:
             # agent.test_mnist()
-            # agent.test()
-            agent.test_best_metric()
+            agent.test()
+            # agent.test_best_metric()
 
     
         

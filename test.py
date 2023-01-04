@@ -1,3 +1,4 @@
+import greenlet
 import torch
 import torch.nn as nn
 import utils
@@ -161,7 +162,6 @@ TEXTURES = ['carpet', 'grid', 'leather', 'tile', 'wood']
 
 ''' 修改DAGM的组织结构 像MVTec一样 '''
 
-print('1')
 
 # path = '/root/test/wss/datasets/DAGM_mvteclike'
 
@@ -171,3 +171,102 @@ print('1')
 
 #     if os.path.exists(os.path.join(path, class_name, 'test', 'Thumbs.db')):
 #         os.remove(os.path.join(path, class_name, 'test', 'Thumbs.db'))
+
+
+categorys = ['bottle','cable','capsule', 'carpet', 'grid', 'hazelnut', 'leather', 'metal_nut', 'pill', 'screw', 'tile', 'toothbrush', 'transistor', 'wood', 'zipper']
+# categorys = ['bottle']
+# save_step = 'best_det'
+save_step = 'OursRec'
+save_step = 'OursRecSeg'
+save_step = 'DRAEM'
+# for category in categorys:
+#     print(category)
+#     labels = np.load(f'./clf_tmp/{category}_labels_{save_step}.npy')
+#     scores = np.load(f'./clf_tmp/{category}_scores_{save_step}.npy')
+#     image_paths = np.load(f'./clf_tmp/{category}_paths_{save_step}.npy')
+#     embeddins = np.load(f'./clf_tmp/{category}_embeddings_{save_step}.npy')
+
+#     idx_pos = labels==1
+#     idx_neg = labels==0
+
+#     print(f'pos mean score: {np.mean(scores[idx_pos])}')
+#     print(f'neg mean score: {np.mean(scores[idx_neg])}')
+
+
+''' 画TSNE图 '''
+
+# def tsne(save_step, category, Y=None):
+#     from sklearn.manifold import TSNE
+#     from sklearn.decomposition import PCA
+#     random_state = 200
+    
+#     pca = PCA(n_components=35, random_state=random_state)
+    
+#     tsne = TSNE(n_components=2, init='pca', random_state=random_state)    
+    
+#     labels = []
+#     embeddings = []
+
+#     for i, ss in enumerate(save_step):
+#         embedding = np.load(f'./clf_tmp/{category}_embeddings_{ss}.npy')
+#         label = np.load(f'./clf_tmp/{category}_labels_{ss}.npy')
+#         embeddings.append(embedding)
+#         labels.append(label)
+    
+#     # embedding = np.concatenate(embeddings, axis=0)
+#     # labels = np.concatenate(labels, axis=0)
+#     print(embedding.shape)
+
+    
+
+#     if Y is None:
+#         print('start pca...')
+#         nData = pca.fit_transform(np.concatenate(embeddings, axis=0))
+#         print('start tsne...')
+#         Y = tsne.fit_transform(nData)
+#         print('end')
+#         np.save(f'./clf_tmp/tsne_fig/{category}_{save_step}.npy', Y)
+# # FC7250 = red
+# # 08C250 = green
+# # 08c2ee =  blue
+
+#     Y = np.split(Y, len(save_step), axis=0)
+#     limRange = [[np.max(item[:,0])-np.min(item[:,0]), np.max(item[:,1])-np.min(item[:,1])] for item in Y]
+#     limRange = np.max(limRange)
+
+#     plt.figure(figsize=(5*len(save_step),5))
+#     for i, Ys in enumerate(Y):
+#         idx_pos = labels[i]==1
+#         idx_neg = labels[i]==0
+#         plt.subplot(1, len(save_step), i+1)
+
+#         centerP = [(np.max(Ys[:,0])-np.min(Ys[:,0]))/2+np.min(Ys[:,0]), (np.max(Ys[:,1])-np.min(Ys[:,1]))/2+np.min(Ys[:,1])]
+#         posP = Ys[idx_pos]
+#         negP = Ys[idx_neg]
+#         # posP[:,0] = (posP[:,0] - np.min(posP[:,0]))*20 / (np.max(posP[:,0]) - np.min(posP[:,0])) - 10
+#         # negP[:,1] = (negP[:,1] - np.min(negP[:,1]))*20 / (np.max(negP[:,1]) - np.min(negP[:,1])) - 10
+#         plt.scatter(negP[:,0], negP[:,1], color='#08C250')
+#         plt.scatter(posP[:,0], posP[:,1], color='#FC7250')
+        
+#         # plt.xlim(left=np.min(Y[:,0]), right=np.max(Y[:,0]))
+#         # plt.ylim(bottom=np.min(Y[:,1]), top=np.max(Y[:,1]))
+#         plt.xlim(left=centerP[0]-limRange/2, right=centerP[0]+limRange/2)
+#         plt.ylim(bottom=centerP[1]-limRange/2, top=centerP[1]+limRange/2)
+#     plt.savefig(f'./clf_tmp/tsne_fig/{category}_{save_step}.jpg')
+#     plt.close()
+
+# category = 'bottle'
+# save_step = ['pretrain_Ori','pretrain_riad','pretrain_draem','pretrain_Ours']
+# save_step = ['80det_ori','80det_riad','80det_draem','80det_ours']
+
+# for category in categorys:
+#     print(f"draw tsne fig, now category [{category}]")
+#     if os.path.exists(f'./clf_tmp/tsne_fig/{category}_{save_step}.npy'):
+#         Y = np.load(f'./clf_tmp/tsne_fig/{category}_{save_step}.npy')
+#     else:
+#         Y = None
+#     tsne(save_step, category, Y)
+
+a = np.array([1,1,0,0,1])
+b = np.array([1,2,3,4,5])
+print(b[a==1])
